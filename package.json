@@ -1,0 +1,11 @@
+{
+  "name": "vybe-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build"
+  }
+}
