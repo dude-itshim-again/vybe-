@@ -13,6 +13,8 @@ let mainWindow = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'Vybe — Kinetic Music & DSP Studio',
+    icon: path.join(__dirname, '../public/logo.png'),
     width: 1280,
     height: 820,
     minWidth: 380,
@@ -21,17 +23,34 @@ function createWindow() {
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
-      nodeIntegration: false,
+      webSecurity: false, // Disables CORS restrictions so all direct audio streams and APIs load natively
       contextIsolation: true,
+      nodeIntegration: false,
       backgroundThrottling: false,
-      webSecurity: false, // Allows crossOrigin="anonymous" audio to connect to Web Audio AudioContext without tainting
     },
   });
 
+  const ses = mainWindow.webContents.session;
+
+  // 1. Strip or spoof restrictive Origin / Referer headers for upstream audio CDNs & APIs
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    const requestHeaders = { ...details.requestHeaders };
+    const url = details.url || '';
+    if (
+      url.includes('saavn') ||
+      url.includes('saavncdn') ||
+      url.includes('jiosaavn') ||
+      url.includes('lrclib.net')
+    ) {
+      delete requestHeaders['Origin'];
+      delete requestHeaders['Referer'];
+    }
+    callback({ requestHeaders });
+  });
+
   // 2. Automatic CORS Unlocker for Web Audio API:
-  // Intercept all HTTP/HTTPS responses and inject permissive CORS headers so JioSaavn CDN
-  // (aac.saavncdn.com) streams connect to AudioContext and DSP chains seamlessly.
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+  // Injects permissive CORS headers so JioSaavn CDN (aac.saavncdn.com) streams connect to AudioContext
+  ses.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
 
     responseHeaders['Access-Control-Allow-Origin'] = ['*'];
@@ -43,13 +62,12 @@ function createWindow() {
   });
 
   // 3. Load Application:
-  // Points to Vite dev server in desktop:dev, or production bundle in packaged desktop app.
+  // Points to Vite dev server if running, or falls back to production bundle in dist/index.html
+  const isDev = process.env.NODE_ENV === 'development' || (!app.isPackaged && process.env.LOAD_DIST !== 'true');
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
   if (isDev) {
     mainWindow.loadURL(devUrl).catch(() => {
-      // If dev server is not ready immediately, fallback to packaged file
       mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
     });
   } else {

@@ -4,6 +4,7 @@ import { echoGatewayPlugin } from './src/server/echoGateway';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: './',
   plugins: [react(), echoGatewayPlugin()],
   server: {
     port: 5173,

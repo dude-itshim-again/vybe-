@@ -376,7 +376,7 @@ export const App: React.FC = () => {
         name: authUser.displayName,
         email: authUser.email,
         avatarColor: '#2563EB',
-        avatarUrl: '/logo.png',
+        avatarUrl: './logo.png',
         createdAt: Date.now(),
       };
     }

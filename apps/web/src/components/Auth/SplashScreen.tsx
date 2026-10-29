@@ -201,7 +201,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = React.memo(({ onComplet
       {/* Layer 1: Full-Screen Bleed Background Video (Muted, Visuals Only) */}
       <video
         ref={bgVideoRef}
-        src="/vybe-intro.mp4"
+        src="./vybe-intro.mp4"
         autoPlay
         muted
         playsInline
@@ -211,7 +211,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = React.memo(({ onComplet
       {/* Layer 2: Crisp Foreground Video (Full Viewport Cover, Edge-to-Edge with Full Audio) */}
       <video
         ref={videoRef}
-        src="/vybe-intro.mp4"
+        src="./vybe-intro.mp4"
         autoPlay
         playsInline
         onTimeUpdate={handleTimeUpdate}

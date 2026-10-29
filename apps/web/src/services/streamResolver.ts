@@ -277,25 +277,7 @@ export async function fetchCatalogSearch(query: string, limit = 20): Promise<Ech
   const cleanQ = query.trim();
   if (!cleanQ) return [];
 
-  // Try local dev server endpoint if in dev mode
-  if (import.meta.env.DEV && !isElectronEnvironment() && !isCapacitorEnvironment()) {
-    try {
-      const res = await fetch(`/api/echo/search?q=${encodeURIComponent(cleanQ)}`, {
-        signal: AbortSignal.timeout(2500),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const list = Array.isArray(json) ? json : json?.tracks;
-        if (Array.isArray(list) && list.length > 0) {
-          return list;
-        }
-      }
-    } catch {
-      // Fall through to public mirrors
-    }
-  }
-
-  // Prioritize fastest mirror first
+  // Prioritize fastest mirror first, cascading across live CORS-enabled HTTPS mirrors
   const prioritizedMirrors = [
     fastestMirror,
     ...JIOSAAVN_MIRRORS.filter((m) => m !== fastestMirror),
@@ -308,7 +290,7 @@ export async function fetchCatalogSearch(query: string, limit = 20): Promise<Ech
     }
   }
 
-  // Fallback: Direct JioSaavn with pure JS DES
+  // Fallback: Direct JioSaavn HTTPS API with client-side DES decryption
   const directResults = await searchSaavnDirect(cleanQ, limit);
   if (directResults.length > 0) return directResults;
 
@@ -321,9 +303,8 @@ const CACHE_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Universal Home Feed:
- * 1. Returns cached sections immediately for 0ms startup
- * 2. If in dev mode, checks `/api/echo/home`
- * 3. In production, fetches curated sections in parallel across active mirrors
+ * 1. Returns cached sections immediately for 0ms startup (memory & localStorage)
+ * 2. Fetches curated sections in parallel across active HTTPS mirrors
  */
 export async function fetchHomeFeed(): Promise<HomeSection[]> {
   const now = Date.now();
@@ -346,26 +327,6 @@ export async function fetchHomeFeed(): Promise<HomeSection[]> {
       }
     }
   } catch {}
-
-  // Try local dev server endpoint if in dev mode
-  if (import.meta.env.DEV && !isElectronEnvironment() && !isCapacitorEnvironment()) {
-    try {
-      const res = await fetch('/api/echo/home', { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        const json = await res.json();
-        const list = Array.isArray(json) ? json : json?.sections;
-        if (Array.isArray(list) && list.length > 0) {
-          homeFeedCache = { timestamp: now, sections: list };
-          try {
-            localStorage.setItem('vybe_home_feed_cache_v2', JSON.stringify(list));
-          } catch {}
-          return list;
-        }
-      }
-    } catch {
-      // Fall through to client build
-    }
-  }
 
   // Build client-side curated home sections in parallel across verified mirrors
   const configs = [

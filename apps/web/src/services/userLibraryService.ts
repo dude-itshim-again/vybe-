@@ -78,7 +78,7 @@ export const DEFAULT_GUEST_USER: VybeUser = {
   name: 'Guest Vyber',
   email: 'guest@vybe.local',
   avatarColor: '#8B5CF6',
-  avatarUrl: '/logo.png',
+  avatarUrl: './logo.png',
   createdAt: Date.now(),
 };
 
@@ -142,7 +142,7 @@ class UserLibraryService {
       name: cleanName,
       email: user.email || '',
       avatarColor: AVATAR_COLORS[Math.abs(user.id.charCodeAt(0) || 0) % AVATAR_COLORS.length],
-      avatarUrl: user.user_metadata?.avatar_url || '/logo.png',
+      avatarUrl: user.user_metadata?.avatar_url || './logo.png',
       createdAt: user.created_at ? new Date(user.created_at).getTime() : Date.now(),
     };
 
@@ -219,7 +219,7 @@ class UserLibraryService {
               name: authUser.displayName || 'Vybe Member',
               email: authUser.email || '',
               avatarColor: AVATAR_COLORS[Math.abs(authUser.id.charCodeAt(0) || 0) % AVATAR_COLORS.length],
-              avatarUrl: '/logo.png',
+              avatarUrl: './logo.png',
               createdAt: Date.now(),
             };
             this.users.set(authUser.id, this.currentUser);
@@ -493,7 +493,7 @@ class UserLibraryService {
       name: cleanName,
       email: cleanEmail,
       avatarColor: avatarColor || AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
-      avatarUrl: '/logo.png',
+      avatarUrl: './logo.png',
       createdAt: Date.now(),
     };
 

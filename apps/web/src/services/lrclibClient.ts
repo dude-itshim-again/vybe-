@@ -559,44 +559,7 @@ export async function autoFetchLyrics(
     };
   }
 
-  // 1. Server-side multi-source endpoint check if available
-  try {
-    const serverUrl = `/api/echo/lyrics?title=${encodeURIComponent(cleanTitle)}&artist=${encodeURIComponent(primaryArtist)}&duration=${encodeURIComponent(safeAudioDuration)}&songId=${encodeURIComponent(metadata.songId || '')}`;
-    const sRes = await fetch(serverUrl);
-    if (sRes.ok) {
-      const sJson = await sRes.json();
-      if (sJson && sJson.success && (sJson.syncedLyrics || sJson.plainLyrics)) {
-        const record: LRCLibRecord = {
-          id: typeof sJson.id === 'number' ? sJson.id : 99999,
-          name: sJson.trackName || cleanTitle,
-          trackName: sJson.trackName || cleanTitle,
-          artistName: sJson.artistName || primaryArtist,
-          albumName: metadata.album || '',
-          duration: sJson.duration || audioDuration || 180,
-          instrumental: !!sJson.instrumental,
-          plainLyrics: sJson.plainLyrics || null,
-          syncedLyrics: sJson.syncedLyrics || null,
-        };
-        const parsedTrack = convertLRCLibToLyricTrack(record, audioDuration);
-        setCachedLyricTrack(rawTitle, parsedTrack);
-        setCachedLyricTrack(cleanTitle, parsedTrack);
-        if (primaryArtist && cleanTitle) {
-          setCachedLyrics(primaryArtist, cleanTitle, record);
-        }
-        const statusLabel = sJson.syncedLyrics
-          ? `Synced Lyrics Locked (${record.artistName} - ${record.trackName})`
-          : `Plain Lyrics Auto-Timed (${record.artistName} - ${record.trackName})`;
-        onStatusChange?.(statusLabel);
-        return {
-          track: parsedTrack,
-          record,
-          candidates: [record],
-          isFallbackInterpolated: !record.syncedLyrics && !!record.plainLyrics,
-          isDemoFallback: false,
-        };
-      }
-    }
-  } catch {}
+  const cleanSongId = (metadata.songId || '').replace(/^saavn-/, '');
 
   const candidateMap = new Map<number, LRCLibRecord>();
   const addCandidates = (records: LRCLibRecord[]) => {
@@ -685,6 +648,79 @@ export async function autoFetchLyrics(
   }
 
   const allCandidates = Array.from(candidateMap.values());
+
+  // Pass 3.5: Direct JioSaavn upstream lyrics fallback if LRCLIB has no results
+  if (allCandidates.length === 0 && cleanSongId) {
+    try {
+      // 1. Direct JioSaavn API
+      let saavnLyrics: string | null = null;
+      try {
+        const jsRes = await fetch(
+          `https://www.jiosaavn.com/api.php?__call=lyrics.getLyrics&lyrics_id=${encodeURIComponent(cleanSongId)}&_format=json&ctx=web6dot0`,
+          { signal: AbortSignal.timeout(3000) }
+        );
+        if (jsRes.ok) {
+          const jsData = await jsRes.json();
+          if (typeof jsData?.lyrics === 'string' && jsData.lyrics.trim().length > 0) {
+            saavnLyrics = jsData.lyrics
+              .replace(/<br\s*\/?>/gi, '\n')
+              .replace(/&quot;/g, '"')
+              .replace(/&amp;/g, '&')
+              .replace(/&#039;/g, "'");
+          }
+        }
+      } catch {}
+
+      // 2. Fallback to active HTTPS mirror
+      if (!saavnLyrics) {
+        try {
+          const mRes = await fetch(
+            `https://jiosaavn-api-taupe.vercel.app/api/songs/${encodeURIComponent(cleanSongId)}/lyrics`,
+            { signal: AbortSignal.timeout(3000) }
+          );
+          if (mRes.ok) {
+            const mData = await mRes.json();
+            const rawL = mData?.data?.lyrics || mData?.lyrics;
+            if (typeof rawL === 'string' && rawL.trim().length > 0) {
+              saavnLyrics = rawL
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/&quot;/g, '"')
+                .replace(/&amp;/g, '&')
+                .replace(/&#039;/g, "'");
+            }
+          }
+        } catch {}
+      }
+
+      if (saavnLyrics) {
+        const saavnRecord: LRCLibRecord = {
+          id: 88888,
+          name: cleanTitle || rawTitle || 'Audio Track',
+          trackName: cleanTitle || rawTitle || 'Audio Track',
+          artistName: primaryArtist || '',
+          albumName: metadata.album || '',
+          duration: safeAudioDuration || 180,
+          instrumental: false,
+          plainLyrics: saavnLyrics,
+          syncedLyrics: null,
+        };
+        const parsed = convertLRCLibToLyricTrack(saavnRecord, safeAudioDuration);
+        setCachedLyricTrack(rawTitle, parsed);
+        setCachedLyricTrack(cleanTitle, parsed);
+        if (primaryArtist && cleanTitle) {
+          setCachedLyrics(primaryArtist, cleanTitle, saavnRecord);
+        }
+        onStatusChange?.(`Plain Lyrics Auto-Timed (${primaryArtist} - ${cleanTitle})`);
+        return {
+          track: parsed,
+          record: saavnRecord,
+          candidates: [saavnRecord],
+          isFallbackInterpolated: true,
+          isDemoFallback: false,
+        };
+      }
+    } catch {}
+  }
 
   // Pass 4: Instrumental Fallback if absolutely no candidates exist
   if (allCandidates.length === 0) {

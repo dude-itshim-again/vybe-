@@ -6,6 +6,9 @@
   ],
   "scripts": {
     "dev": "npm --prefix apps/web run dev",
-    "build": "npm --prefix apps/web run build"
+    "build": "npm --prefix apps/web run build",
+    "desktop": "npm --prefix apps/web run desktop",
+    "electron:dev": "npm --prefix apps/web run electron:dev",
+    "electron:build": "npm --prefix apps/web run electron:build"
   }
 }
