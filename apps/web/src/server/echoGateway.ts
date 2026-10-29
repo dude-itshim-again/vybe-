@@ -10,7 +10,19 @@
 import type { Plugin, ViteDevServer } from 'vite';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
+import { createRequire } from 'module';
 import { decryptDesEcb } from './des';
+
+const nodeRequire = createRequire(import.meta.url);
+const { resolveYouTubeAudio } = nodeRequire('../../electron/ytResolver.cjs');
+
+export const ANTI_KARAOKE_REGEX =
+  /\b(karaoke|zzang|arcade player|16-bit|8-bit|emulation|originally perf|performed by|tribute to|melody version|instrumental version|ringtone|8d audio|chipmunk|nightcore)\b/i;
+
+export function isKaraokeOrBootleg(title?: string, artist?: string, album?: string): boolean {
+  const combined = `${title || ''} ${artist || ''} ${album || ''}`;
+  return ANTI_KARAOKE_REGEX.test(combined);
+}
 
 export interface EchoTrack {
   id: string;
@@ -456,11 +468,19 @@ async function searchSaavn(query: string, limit = 20): Promise<EchoTrack[]> {
         .replace('150x150', '500x500')
         .replace('50x50', '500x500');
 
+      const title = cleanHtmlEntities(song.song || song.title || 'Untitled Track');
+      const artist = cleanHtmlEntities(song.primary_artists || song.singers || 'Unknown Artist');
+      const album = cleanHtmlEntities(song.album || '');
+
+      if (isKaraokeOrBootleg(title, artist, album)) {
+        continue;
+      }
+
       tracks.push({
         id: `saavn-${song.id}`,
-        title: cleanHtmlEntities(song.song || song.title || 'Untitled Track'),
-        artist: cleanHtmlEntities(song.primary_artists || song.singers || 'Unknown Artist'),
-        album: cleanHtmlEntities(song.album || ''),
+        title,
+        artist,
+        album,
         duration: parseInt(song.duration, 10) || 180,
         artworkUrl: artwork,
         streamUrl: directAudioUrl,
@@ -657,14 +677,38 @@ export function echoGatewayPlugin(): Plugin {
         const httpReq = req as IncomingMessage;
         const urlStr = httpReq.url || '';
 
-        // Only handle /api/echo/... endpoints
-        if (!urlStr.startsWith('/api/echo/')) {
+        // Handle /api/echo/... and /api/resolve-stream endpoints
+        if (!urlStr.startsWith('/api/echo/') && !urlStr.startsWith('/api/resolve-stream')) {
           return next();
         }
 
         try {
           const parsed = new URL(urlStr, 'http://localhost');
           const pathname = parsed.pathname;
+
+          // 0. GET /api/resolve-stream?title=...&artist=...&duration=...
+          if (pathname === '/api/resolve-stream' || pathname === '/api/echo/resolve-stream') {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Content-Type', 'application/json');
+
+            const title = parsed.searchParams.get('title') || '';
+            const artist = parsed.searchParams.get('artist') || '';
+            const duration = parseInt(parsed.searchParams.get('duration') || '0', 10);
+
+            try {
+              const resolved = await resolveYouTubeAudio(title, artist, duration);
+              if (resolved) {
+                res.end(JSON.stringify(resolved));
+              } else {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ error: 'Stream not found' }));
+              }
+            } catch (resolveErr: any) {
+              res.statusCode = 500;
+              res.end(JSON.stringify({ error: resolveErr?.message || 'Failed to resolve stream' }));
+            }
+            return;
+          }
 
           // 1. GET /api/echo/search?q=...
           if (pathname === '/api/echo/search') {

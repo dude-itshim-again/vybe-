@@ -12,7 +12,7 @@ import { LyricTrack } from '../services/lrcParser';
 import { TrackAnalyzer, TrackAudioProfile } from '../audio/TrackAnalyzer';
 import { echoBrain } from '../services/echoBrainService';
 import { mediaSessionService } from '../services/mediaSessionService';
-import { resolveStreamUrl, fetchCatalogSearch, fetchTrackStreamOnDemand } from '../services/streamResolver';
+import { resolveStreamUrl, fetchCatalogSearch, fetchTrackStreamOnDemand, resolveFullTrackAudio } from '../services/streamResolver';
 import { offlineVault } from '../services/offlineVault';
 import { userLibrary } from '../services/userLibraryService';
 
@@ -49,10 +49,11 @@ export function getSavedLastPlayedTrack(): TrackMetadata {
 }
 
 /**
- * Seamlessly routes audio:
+ * 3-Tier Seamless Audio Routing:
  * 1. Checks if track is saved in IndexedDB offlineVault (returns 0ms local blob: URL)
- * 2. Resolves direct stream URL (unwrapping and enforcing HTTPS)
- * 3. On-Demand Fallback: fetches live stream across Saavn mirrors if not in search payload
+ * 2. Tier 1: Verified Direct JioSaavn 320kbps stream (only if title & artist match)
+ * 3. Tier 2: Native YouTube Music Audio Resolver (Electron IPC or dev proxy)
+ * 4. Tier 3: Public Piped & official iTunes studio audio preview fallback
  */
 async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
   try {
@@ -62,22 +63,16 @@ async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
     console.warn('[useAudioEngine] Offline vault check fallback:', e);
   }
 
-  let direct = resolveStreamUrl(track.streamUrl || track.audioUrl || track.url);
-  if (direct) return direct;
-
-  // On-Demand Stream Fetch Fallback
-  if (track.id) {
-    try {
-      const onDemandUrl = await fetchTrackStreamOnDemand(track.id);
-      if (onDemandUrl) {
-        track.streamUrl = onDemandUrl;
-        track.audioUrl = onDemandUrl;
-        track.url = onDemandUrl;
-        return onDemandUrl;
-      }
-    } catch (err) {
-      console.warn('[useAudioEngine] On-demand stream fetch failed:', err);
+  try {
+    const stream = await resolveFullTrackAudio(track);
+    if (stream) {
+      track.streamUrl = stream;
+      track.audioUrl = stream;
+      track.url = stream;
+      return stream;
     }
+  } catch (err) {
+    console.warn('[useAudioEngine] Stream resolution failed:', err);
   }
 
   return '';

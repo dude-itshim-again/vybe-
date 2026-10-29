@@ -1,5 +1,6 @@
-const { app, BrowserWindow, session } = require('electron');
+const { app, BrowserWindow, session, ipcMain } = require('electron');
 const path = require('path');
+const { resolveYouTubeAudio } = require('./ytResolver.cjs');
 
 // 1. Prevent Background Throttling:
 // Ensures 60Hz Sub-Bass DSP, 5-Band EQ, and sample-accurate Dual-Deck AutoMix transitions
@@ -26,6 +27,7 @@ function createWindow() {
       webSecurity: false, // Completely disables CORS for music APIs & audio streams
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.cjs'),
       backgroundThrottling: false,
     },
   });
@@ -77,6 +79,17 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // 4. Native YouTube Music Full-Audio Stream Resolver (Tier 2)
+  ipcMain.handle('resolve-yt-stream', async (_, args) => {
+    try {
+      const { title, artist, duration } = args || {};
+      return await resolveYouTubeAudio(title, artist, Number(duration) || 0);
+    } catch (err) {
+      console.error('[main.cjs] resolve-yt-stream error:', err);
+      return null;
+    }
+  });
+
   createWindow();
 
   app.on('activate', () => {

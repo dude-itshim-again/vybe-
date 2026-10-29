@@ -28,6 +28,7 @@ export interface TrackMetadata {
   artwork?: string;
   audioUrl?: string;
   url?: string;
+  previewUrl?: string;
 }
 
 export interface MusicProvider {
