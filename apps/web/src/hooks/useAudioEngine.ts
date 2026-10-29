@@ -12,7 +12,7 @@ import { LyricTrack } from '../services/lrcParser';
 import { TrackAnalyzer, TrackAudioProfile } from '../audio/TrackAnalyzer';
 import { echoBrain } from '../services/echoBrainService';
 import { mediaSessionService } from '../services/mediaSessionService';
-import { resolveStreamUrl, fetchCatalogSearch } from '../services/streamResolver';
+import { resolveStreamUrl, fetchCatalogSearch, fetchTrackStreamOnDemand } from '../services/streamResolver';
 import { offlineVault } from '../services/offlineVault';
 import { userLibrary } from '../services/userLibraryService';
 
@@ -51,7 +51,8 @@ export function getSavedLastPlayedTrack(): TrackMetadata {
 /**
  * Seamlessly routes audio:
  * 1. Checks if track is saved in IndexedDB offlineVault (returns 0ms local blob: URL)
- * 2. Otherwise resolves direct stream URL
+ * 2. Resolves direct stream URL (unwrapping and enforcing HTTPS)
+ * 3. On-Demand Fallback: fetches live stream across Saavn mirrors if not in search payload
  */
 async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
   try {
@@ -60,7 +61,26 @@ async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
   } catch (e) {
     console.warn('[useAudioEngine] Offline vault check fallback:', e);
   }
-  return resolveStreamUrl(track.streamUrl) || track.streamUrl || '';
+
+  let direct = resolveStreamUrl(track.streamUrl || track.audioUrl || track.url);
+  if (direct) return direct;
+
+  // On-Demand Stream Fetch Fallback
+  if (track.id) {
+    try {
+      const onDemandUrl = await fetchTrackStreamOnDemand(track.id);
+      if (onDemandUrl) {
+        track.streamUrl = onDemandUrl;
+        track.audioUrl = onDemandUrl;
+        track.url = onDemandUrl;
+        return onDemandUrl;
+      }
+    } catch (err) {
+      console.warn('[useAudioEngine] On-demand stream fetch failed:', err);
+    }
+  }
+
+  return '';
 }
 
 export interface QueuedTrack extends TrackMetadata {
@@ -569,13 +589,14 @@ export function useAudioEngine(
 
         if (isDefaultDemoOnly || playImmediately) {
           const first = newTracks[0];
-          if (first.streamUrl && engineRef.current) {
-            resolvePlayableUrl(first).then((src) => {
-              if (src && engineRef.current) {
-                engineRef.current.loadTrack(src, true, first.profile);
-              }
-            });
-          }
+          resolvePlayableUrl(first).then((src) => {
+            if (src && engineRef.current) {
+              first.streamUrl = src;
+              first.audioUrl = src;
+              first.url = src;
+              engineRef.current.loadTrack(src, true, first.profile);
+            }
+          });
           onTrackChangeRef.current?.(first, first.lyricsTrack);
 
           const updatedPl = isDefaultDemoOnly ? newTracks : [...s.playlist, ...newTracks];

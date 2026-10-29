@@ -23,6 +23,34 @@ export interface EchoTrack {
   sourceType: 'stream';
   year?: string;
   genre?: string;
+  // Universal track properties for UI component compatibility
+  coverUrl?: string;
+  image?: string;
+  artwork?: string;
+  audioUrl?: string;
+  url?: string;
+}
+
+export const DEFAULT_ARTWORK_FALLBACK = './logo.png';
+
+/**
+ * Robust URL extractor handling all JioSaavn API formats (saavn.dev, jiosaavn-api, strings, arrays, objects)
+ * and always enforcing https:// protocol.
+ */
+export function extractBestUrl(field: any): string {
+  if (!field) return '';
+  if (typeof field === 'string') return field.replace(/^http:\/\//i, 'https://');
+  if (Array.isArray(field) && field.length > 0) {
+    // Pick the last item (highest quality: 500x500 for image, 320kbps for audio)
+    const best = field[field.length - 1] || field[0];
+    const raw = typeof best === 'string' ? best : (best?.url || best?.link || best?.src || '');
+    return String(raw).replace(/^http:\/\//i, 'https://');
+  }
+  if (typeof field === 'object') {
+    const raw = field.url || field.link || field['500x500'] || field['320kbps'] || '';
+    return String(raw).replace(/^http:\/\//i, 'https://');
+  }
+  return '';
 }
 
 export interface HomeSection {
@@ -118,43 +146,39 @@ function parseMirrorSongs(list: any[]): EchoTrack[] {
   const tracks: EchoTrack[] = [];
 
   for (const song of list) {
-    if (!song || !song.id) continue;
+    if (!song || (!song.id && !song.songId)) continue;
+    const songId = String(song.id || song.songId);
 
-    let directAudioUrl = '';
-    if (Array.isArray(song.downloadUrl)) {
-      const q320 = song.downloadUrl.find((d: any) => d.quality === '320kbps');
-      const q160 = song.downloadUrl.find((d: any) => d.quality === '160kbps');
-      const q96 = song.downloadUrl.find((d: any) => d.quality === '96kbps');
-      const best = q320 || q160 || q96 || song.downloadUrl[song.downloadUrl.length - 1];
-      directAudioUrl = best?.link || best?.url || '';
-    } else if (typeof song.downloadUrl === 'string') {
-      directAudioUrl = song.downloadUrl;
-    } else if (song.media_preview_url) {
-      directAudioUrl = song.media_preview_url;
+    // Audio stream URL extraction across all possible Saavn API variants
+    let directAudioUrl = extractBestUrl(
+      song.downloadUrl ||
+      song.download_url ||
+      song.media_url ||
+      song.audioUrl ||
+      song.streamUrl ||
+      song.url ||
+      song.media_preview_url
+    );
+
+    // If DES encrypted media url exists (direct JioSaavn API)
+    if (!directAudioUrl && song.encrypted_media_url) {
+      const decrypted = decryptDesEcb(song.encrypted_media_url, '38346591');
+      if (decrypted) {
+        directAudioUrl = decrypted.replace('_96.mp4', '_320.mp4');
+      }
     }
 
-    if (!directAudioUrl) continue;
-
-    // Force HTTPS for all streams
     if (directAudioUrl.startsWith('http://')) {
       directAudioUrl = directAudioUrl.replace('http://', 'https://');
     }
 
-    let artwork = '';
-    if (Array.isArray(song.image) && song.image.length > 0) {
-      artwork =
-        song.image[song.image.length - 1]?.link ||
-        song.image[song.image.length - 1]?.url ||
-        song.image[0]?.link ||
-        song.image[0]?.url ||
-        '';
-    } else if (typeof song.image === 'string') {
-      artwork = song.image;
+    // Artwork extraction across all formats and force 500x500 high resolution
+    let artwork = extractBestUrl(song.image || song.images || song.artworkUrl || song.coverUrl);
+    if (artwork) {
+      artwork = artwork.replace('150x150', '500x500').replace('50x50', '500x500');
     }
-
-    artwork = artwork.replace('150x150', '500x500').replace('50x50', '500x500');
-    if (artwork.startsWith('http://')) {
-      artwork = artwork.replace('http://', 'https://');
+    if (!artwork) {
+      artwork = DEFAULT_ARTWORK_FALLBACK;
     }
 
     const primaryArtists = Array.isArray(song.artists?.primary)
@@ -165,16 +189,26 @@ function parseMirrorSongs(list: any[]): EchoTrack[] {
         song.singers ||
         'Unknown Artist';
 
+    const cleanTitleStr = cleanHtmlEntities(song.name || song.song || song.title || 'Untitled Track');
+    const cleanArtistStr = cleanHtmlEntities(primaryArtists);
+    const cleanAlbumStr = cleanHtmlEntities(
+      typeof song.album === 'object' ? song.album?.name || '' : song.album || ''
+    );
+    const resolvedStream = resolveStreamUrl(directAudioUrl);
+
     tracks.push({
-      id: `saavn-${song.id}`,
-      title: cleanHtmlEntities(song.name || song.song || song.title || 'Untitled Track'),
-      artist: cleanHtmlEntities(primaryArtists),
-      album: cleanHtmlEntities(
-        typeof song.album === 'object' ? song.album?.name || '' : song.album || ''
-      ),
+      id: songId.startsWith('saavn-') ? songId : `saavn-${songId}`,
+      title: cleanTitleStr,
+      artist: cleanArtistStr,
+      album: cleanAlbumStr,
       duration: parseInt(String(song.duration), 10) || 180,
       artworkUrl: artwork,
-      streamUrl: resolveStreamUrl(directAudioUrl),
+      coverUrl: artwork,
+      image: artwork,
+      artwork: artwork,
+      streamUrl: resolvedStream,
+      audioUrl: resolvedStream,
+      url: resolvedStream,
       quality: directAudioUrl.includes('_320') ? '320kbps' : '160kbps',
       source: 'saavn',
       sourceType: 'stream',
@@ -184,6 +218,58 @@ function parseMirrorSongs(list: any[]): EchoTrack[] {
   }
 
   return tracks;
+}
+
+/**
+ * On-Demand Stream Fetch Fallback:
+ * If a search result item does not include downloadUrl in the search payload,
+ * automatically fetch song details across active mirrors when Play is clicked!
+ */
+export async function fetchTrackStreamOnDemand(trackId: string): Promise<string> {
+  const cleanId = trackId.replace(/^saavn-/, '').trim();
+  if (!cleanId) return '';
+
+  const mirrors = [
+    `https://jiosaavn-api-taupe.vercel.app/api/songs/${cleanId}`,
+    `https://jiosaavn-api-2.vercel.app/api/songs/${cleanId}`,
+    `https://jiosaavn-api-rose.vercel.app/api/songs/${cleanId}`,
+    `https://saavn.dev/api/songs/${cleanId}`,
+    `https://www.jiosaavn.com/api.php?__call=song.getDetails&pids=${cleanId}&_format=json&ctx=web6dot0`,
+  ];
+
+  for (const url of mirrors) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(3500) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const item = Array.isArray(json?.data)
+        ? json.data[0]
+        : (json?.data || json?.songs?.[0] || json?.[cleanId]);
+
+      if (item) {
+        let stream = extractBestUrl(
+          item.downloadUrl ||
+          item.download_url ||
+          item.media_url ||
+          item.audioUrl ||
+          item.streamUrl ||
+          item.url ||
+          item.media_preview_url
+        );
+        if (!stream && item.encrypted_media_url) {
+          const decrypted = decryptDesEcb(item.encrypted_media_url, '38346591');
+          if (decrypted) {
+            stream = decrypted.replace('_96.mp4', '_320.mp4');
+          }
+        }
+        if (stream) {
+          return resolveStreamUrl(stream);
+        }
+      }
+    } catch {}
+  }
+
+  return '';
 }
 
 /**
@@ -239,20 +325,32 @@ async function searchSaavnDirect(query: string, limit = 20): Promise<EchoTrack[]
         directAudioUrl = song.media_preview_url;
       }
 
-      if (!directAudioUrl) continue;
+      let artwork = extractBestUrl(song.image || song.images);
+      if (artwork) {
+        artwork = artwork.replace('150x150', '500x500').replace('50x50', '500x500');
+      }
+      if (!artwork) {
+        artwork = DEFAULT_ARTWORK_FALLBACK;
+      }
 
-      const artwork = (song.image || '')
-        .replace('150x150', '500x500')
-        .replace('50x50', '500x500');
+      const cleanTitleStr = cleanHtmlEntities(song.song || song.title || 'Untitled Track');
+      const cleanArtistStr = cleanHtmlEntities(song.primary_artists || song.singers || 'Unknown Artist');
+      const cleanAlbumStr = cleanHtmlEntities(song.album || '');
+      const finalStream = resolveStreamUrl(directAudioUrl);
 
       tracks.push({
         id: `saavn-${song.id}`,
-        title: cleanHtmlEntities(song.song || song.title || 'Untitled Track'),
-        artist: cleanHtmlEntities(song.primary_artists || song.singers || 'Unknown Artist'),
-        album: cleanHtmlEntities(song.album || ''),
+        title: cleanTitleStr,
+        artist: cleanArtistStr,
+        album: cleanAlbumStr,
         duration: parseInt(song.duration, 10) || 180,
         artworkUrl: artwork,
-        streamUrl: resolveStreamUrl(directAudioUrl),
+        coverUrl: artwork,
+        image: artwork,
+        artwork: artwork,
+        streamUrl: finalStream,
+        audioUrl: finalStream,
+        url: finalStream,
         quality: '320kbps',
         source: 'saavn',
         sourceType: 'stream',

@@ -103,10 +103,16 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
       <div className="w-[28%] min-w-0 flex items-center gap-3.5">
         {/* 48x48px Rounded Cover Art */}
         <div className="relative w-12 h-12 rounded-[12px] bg-white/5 border border-white/12 shrink-0 overflow-hidden shadow-md">
-          {track.artworkUrl ? (
+          {track.artworkUrl || track.coverUrl || track.image ? (
             <img
-              src={track.artworkUrl}
+              src={track.artworkUrl || track.coverUrl || track.image}
               alt={track.title}
+              onError={(e) => {
+                const target = e.currentTarget as HTMLImageElement;
+                if (!target.src.endsWith('logo.png')) {
+                  target.src = './logo.png';
+                }
+              }}
               className="w-full h-full object-cover"
             />
           ) : (

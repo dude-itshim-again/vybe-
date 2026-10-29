@@ -176,7 +176,7 @@ export class AudioDSPEngine {
   public initialize(audioElementA?: HTMLAudioElement, audioElementB?: HTMLAudioElement): void {
     if (this.ctx) return;
 
-    // 1. Initialize HTMLAudioElements with pitch preservation
+    // 1. Initialize HTMLAudioElements with pitch preservation and fallback resilience
     this.deckA = audioElementA || new Audio();
     this.deckA.crossOrigin = 'anonymous';
     this.deckA.preload = 'auto';
@@ -188,6 +188,29 @@ export class AudioDSPEngine {
     this.deckB.preload = 'auto';
     this.configurePitchPreservation(this.deckB);
     this.setupStallRecovery(this.deckB);
+
+    // Automatic CORS Fallback: If audio element encounters a cross-origin error,
+    // immediately strip crossOrigin and retry playback directly so it never silently fails
+    const attachCorsFallback = (audio: HTMLAudioElement, deckId: string) => {
+      audio.addEventListener('error', () => {
+        const currentSrc = audio.src;
+        if (!currentSrc) return;
+        if (audio.crossOrigin) {
+          console.warn(`[AudioDSPEngine] Deck ${deckId} crossOrigin error. Falling back to direct playback without crossOrigin...`);
+          const pos = audio.currentTime;
+          audio.removeAttribute('crossorigin');
+          (audio as any).crossOrigin = null;
+          audio.src = currentSrc;
+          audio.currentTime = pos;
+          audio.load();
+          audio.play().catch((playErr) => {
+            console.warn(`[AudioDSPEngine] Deck ${deckId} fallback play error:`, playErr);
+          });
+        }
+      });
+    };
+    attachCorsFallback(this.deckA, 'A');
+    attachCorsFallback(this.deckB, 'B');
 
     // 2. AudioContext initialization
     const AudioContextClass =
@@ -749,7 +772,17 @@ export class AudioDSPEngine {
         }
       } catch (err: unknown) {
         if (!(err instanceof Error && err.name === 'AbortError')) {
-          console.warn('[AudioDSPEngine] Autoplay pending user gesture:', err);
+          console.warn('[AudioDSPEngine] Autoplay error, retrying without crossOrigin:', err);
+          if (audio.crossOrigin) {
+            audio.removeAttribute('crossorigin');
+            (audio as any).crossOrigin = null;
+            audio.load();
+            try {
+              await audio.play();
+            } catch (fallbackErr) {
+              console.warn('[AudioDSPEngine] Fallback direct play attempt failed:', fallbackErr);
+            }
+          }
         }
       }
     }

@@ -108,10 +108,16 @@ export const EditorialRecentlyPlayedView: React.FC<EditorialRecentlyPlayedViewPr
                 </div>
 
                 <div className="col-span-6 sm:col-span-5 flex items-center gap-3 truncate">
-                  {track.artworkUrl ? (
+                  {track.artworkUrl || track.coverUrl || track.image ? (
                     <img
-                      src={track.artworkUrl}
+                      src={track.artworkUrl || track.coverUrl || track.image}
                       alt={track.title}
+                      onError={(e) => {
+                        const target = e.currentTarget as HTMLImageElement;
+                        if (!target.src.endsWith('logo.png')) {
+                          target.src = './logo.png';
+                        }
+                      }}
                       className="w-9 h-9 rounded-md object-cover border border-white/10 shrink-0"
                     />
                   ) : (

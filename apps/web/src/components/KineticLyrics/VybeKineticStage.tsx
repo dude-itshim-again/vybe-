@@ -189,6 +189,7 @@ function colorFromArtwork(url: string): Promise<string | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
+    img.onerror = () => resolve(null);
     img.onload = () => {
       try {
         const c = document.createElement('canvas');
@@ -324,20 +325,7 @@ function lumnColorsFromArtwork(url: string): Promise<LumnColors | null> {
     img.onload = () => {
       try { resolve(extractLumnColors(img)); } catch { resolve(null); }
     };
-    img.onerror = () => {
-      try {
-        const proxyUrl = `/api/echo/stream?url=${encodeURIComponent(url)}`;
-        const proxyImg = new Image();
-        proxyImg.crossOrigin = 'anonymous';
-        proxyImg.onload = () => {
-          try { resolve(extractLumnColors(proxyImg)); } catch { resolve(null); }
-        };
-        proxyImg.onerror = () => resolve(null);
-        proxyImg.src = proxyUrl;
-      } catch {
-        resolve(null);
-      }
-    };
+    img.onerror = () => resolve(null);
     img.src = url;
   });
 }

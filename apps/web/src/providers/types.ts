@@ -22,6 +22,12 @@ export interface TrackMetadata {
   searchQuery?: string;
   trackNumber?: number;
   profile?: import('../audio/TrackAnalyzer').TrackAudioProfile;
+  // Universal track properties so all components and views always find valid values
+  coverUrl?: string;
+  image?: string;
+  artwork?: string;
+  audioUrl?: string;
+  url?: string;
 }
 
 export interface MusicProvider {

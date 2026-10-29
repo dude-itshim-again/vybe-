@@ -30,55 +30,22 @@ function createWindow() {
     },
   });
 
-  const ses = mainWindow.webContents.session;
-
-  // 1. Set clean browser User-Agent and remove restrictive Origin: file:// headers
-  const BROWSER_USER_AGENT =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-  ses.webRequest.onBeforeSendHeaders((details, callback) => {
-    const requestHeaders = { ...details.requestHeaders };
-    const url = details.url || '';
-
-    // Always provide a standard browser User-Agent instead of Electron's default
-    requestHeaders['User-Agent'] = BROWSER_USER_AGENT;
-
-    // Remove restrictive Origin: file:// or foreign origins for external music APIs & audio CDNs
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      if (
-        requestHeaders['Origin'] &&
-        (requestHeaders['Origin'].startsWith('file://') ||
-          requestHeaders['Origin'] === 'null' ||
-          requestHeaders['Origin'].includes('localhost'))
-      ) {
-        delete requestHeaders['Origin'];
-      }
-
-      // For JioSaavn, Saavn CDN, and LRCLIB, also strip Referer to prevent hotlink blocks
-      if (
-        url.includes('saavn') ||
-        url.includes('saavncdn') ||
-        url.includes('jiosaavn') ||
-        url.includes('lrclib.net')
-      ) {
-        delete requestHeaders['Origin'];
-        delete requestHeaders['Referer'];
-      }
-    }
-
-    callback({ requestHeaders });
+  // 1. Strip restrictive Origin / Referer headers and inject clean browser User-Agent
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...details.requestHeaders };
+    delete headers['Origin'];
+    delete headers['Referer'];
+    headers['User-Agent'] =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    callback({ requestHeaders: headers });
   });
 
-  // 2. Automatic CORS Unlocker for Web Audio API:
-  // Injects permissive CORS headers so JioSaavn CDN (aac.saavncdn.com) streams connect to AudioContext
-  ses.webRequest.onHeadersReceived((details, callback) => {
+  // 2. Automatic CORS Unlocker: Injects permissive CORS headers for all media & CDN streams
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
-
     responseHeaders['Access-Control-Allow-Origin'] = ['*'];
+    responseHeaders['Access-Control-Allow-Methods'] = ['GET, POST, OPTIONS, HEAD'];
     responseHeaders['Access-Control-Allow-Headers'] = ['*'];
-    responseHeaders['Access-Control-Allow-Methods'] = ['GET, HEAD, OPTIONS, POST'];
-    responseHeaders['Access-Control-Expose-Headers'] = ['Content-Length, Content-Range, Accept-Ranges'];
-
     callback({ responseHeaders });
   });
 

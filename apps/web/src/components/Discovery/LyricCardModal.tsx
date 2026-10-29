@@ -137,11 +137,15 @@ export const LyricCardModal: React.FC<LyricCardModalProps> = ({
       try {
         const img = new Image();
         img.crossOrigin = 'anonymous';
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
-          img.onerror = reject;
+        await new Promise((resolve) => {
+          img.onload = () => {
+            artworkLoaded = true;
+            resolve(true);
+          };
+          img.onerror = () => resolve(false);
           img.src = track.artworkUrl!;
         });
+        if (!artworkLoaded) throw new Error('Image load fallback');
         // Rounded artwork card
         ctx.save();
         ctx.beginPath();
