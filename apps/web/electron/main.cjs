@@ -1,6 +1,17 @@
 const { app, BrowserWindow, session, ipcMain } = require('electron');
 const path = require('path');
-const { resolveYouTubeAudio } = require('./ytResolver.cjs');
+
+let ytResolverMod = null;
+async function getYtResolver() {
+  if (!ytResolverMod) {
+    try {
+      ytResolverMod = require('./ytResolver.cjs');
+    } catch {
+      ytResolverMod = await import('./ytResolver.cjs');
+    }
+  }
+  return ytResolverMod;
+}
 
 // 1. Prevent Background Throttling:
 // Ensures 60Hz Sub-Bass DSP, 5-Band EQ, and sample-accurate Dual-Deck AutoMix transitions
@@ -83,7 +94,12 @@ app.whenReady().then(() => {
   ipcMain.handle('resolve-yt-stream', async (_, args) => {
     try {
       const { title, artist, duration } = args || {};
-      return await resolveYouTubeAudio(title, artist, Number(duration) || 0);
+      const mod = await getYtResolver();
+      const fn = mod?.resolveYouTubeAudio || mod?.default?.resolveYouTubeAudio;
+      if (typeof fn === 'function') {
+        return await fn(title, artist, Number(duration) || 0);
+      }
+      return null;
     } catch (err) {
       console.error('[main.cjs] resolve-yt-stream error:', err);
       return null;
