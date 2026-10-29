@@ -8,7 +8,10 @@
     "dev": "npm --prefix apps/web run dev",
     "build": "npm --prefix apps/web run build",
     "desktop": "npm --prefix apps/web run desktop",
-    "electron:dev": "npm --prefix apps/web run electron:dev",
-    "electron:build": "npm --prefix apps/web run electron:build"
+    "desktop:dev": "npm --prefix apps/web run desktop:dev",
+    "desktop:run": "npm --prefix apps/web run desktop:run",
+    "desktop:exe": "npm --prefix apps/web run desktop:exe",
+    "electron:dev": "npm --prefix apps/web run desktop:dev",
+    "electron:build": "npm --prefix apps/web run desktop:exe"
   }
 }

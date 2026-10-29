@@ -17,13 +17,13 @@ function createWindow() {
     icon: path.join(__dirname, '../public/logo.png'),
     width: 1280,
     height: 820,
-    minWidth: 380,
+    minWidth: 960,
     minHeight: 640,
-    backgroundColor: '#050507',
+    backgroundColor: '#07080C',
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
-      webSecurity: false, // Disables CORS restrictions so all direct audio streams and APIs load natively
+      webSecurity: false, // Completely disables CORS for music APIs & audio streams
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
@@ -32,19 +32,40 @@ function createWindow() {
 
   const ses = mainWindow.webContents.session;
 
-  // 1. Strip or spoof restrictive Origin / Referer headers for upstream audio CDNs & APIs
+  // 1. Set clean browser User-Agent and remove restrictive Origin: file:// headers
+  const BROWSER_USER_AGENT =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const requestHeaders = { ...details.requestHeaders };
     const url = details.url || '';
-    if (
-      url.includes('saavn') ||
-      url.includes('saavncdn') ||
-      url.includes('jiosaavn') ||
-      url.includes('lrclib.net')
-    ) {
-      delete requestHeaders['Origin'];
-      delete requestHeaders['Referer'];
+
+    // Always provide a standard browser User-Agent instead of Electron's default
+    requestHeaders['User-Agent'] = BROWSER_USER_AGENT;
+
+    // Remove restrictive Origin: file:// or foreign origins for external music APIs & audio CDNs
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      if (
+        requestHeaders['Origin'] &&
+        (requestHeaders['Origin'].startsWith('file://') ||
+          requestHeaders['Origin'] === 'null' ||
+          requestHeaders['Origin'].includes('localhost'))
+      ) {
+        delete requestHeaders['Origin'];
+      }
+
+      // For JioSaavn, Saavn CDN, and LRCLIB, also strip Referer to prevent hotlink blocks
+      if (
+        url.includes('saavn') ||
+        url.includes('saavncdn') ||
+        url.includes('jiosaavn') ||
+        url.includes('lrclib.net')
+      ) {
+        delete requestHeaders['Origin'];
+        delete requestHeaders['Referer'];
+      }
     }
+
     callback({ requestHeaders });
   });
 
@@ -61,9 +82,14 @@ function createWindow() {
     callback({ responseHeaders });
   });
 
-  // 3. Load Application:
-  // Points to Vite dev server if running, or falls back to production bundle in dist/index.html
-  const isDev = process.env.NODE_ENV === 'development' || (!app.isPackaged && process.env.LOAD_DIST !== 'true');
+  // 3. Smart Dev vs. Production Loader:
+  // If process.env.VITE_DEV_SERVER_URL is set (or --dev flag is passed), load the live Vite dev server URL.
+  // Otherwise, load path.join(__dirname, '../dist/index.html').
+  const isDev = Boolean(
+    process.env.VITE_DEV_SERVER_URL ||
+      process.argv.includes('--dev') ||
+      process.argv.includes('-d')
+  );
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
 
   if (isDev) {
