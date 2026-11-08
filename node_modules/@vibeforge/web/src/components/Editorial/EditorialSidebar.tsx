@@ -71,7 +71,7 @@ export const EditorialSidebar: React.FC<EditorialSidebarProps> = ({
         {/* 1. BRAND HEADER: Anime Character Logo + Vybe. */}
         <div className="flex items-center gap-3 px-2 py-1">
           <img
-            src="/logo.png"
+            src="./logo.png"
             alt="Vybe"
             className="w-9 h-9 rounded-full object-cover border border-white/20 shadow-[0_0_15px_rgba(255,255,255,0.15)]"
           />

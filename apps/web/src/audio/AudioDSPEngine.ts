@@ -47,6 +47,18 @@ export interface TransitionParams {
   isManualSkip?: boolean;
 }
 
+let sharedAudioContext: AudioContext | null = null;
+
+export function getSharedAudioContext(): AudioContext {
+  if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    sharedAudioContext = new AudioContextClass({ latencyHint: 'interactive' });
+  }
+  return sharedAudioContext;
+}
+
 export class AudioDSPEngine {
   private ctx: AudioContext | null = null;
 
@@ -212,11 +224,8 @@ export class AudioDSPEngine {
     attachCorsFallback(this.deckA, 'A');
     attachCorsFallback(this.deckB, 'B');
 
-    // 2. AudioContext initialization
-    const AudioContextClass =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.ctx = new AudioContextClass({ latencyHint: 'interactive' });
+    // 2. AudioContext initialization (Ensures single singleton instance across lifetime)
+    this.ctx = getSharedAudioContext();
 
     // 3. Media Element Audio Sources
     this.deckASource = this.ctx.createMediaElementSource(this.deckA);
@@ -723,6 +732,38 @@ export class AudioDSPEngine {
     return this.isTransitioning;
   }
 
+  public cleanupDeck(deck: HTMLAudioElement): void {
+    if (!deck) return;
+    try {
+      deck.pause();
+      const currentSrc = deck.src;
+      deck.removeAttribute('src');
+      deck.src = '';
+      deck.load(); // Releases Chromium audio buffer & decoders from RAM
+      if (currentSrc && currentSrc.startsWith('blob:')) {
+        URL.revokeObjectURL(currentSrc);
+      }
+    } catch (e) {
+      console.warn('[AudioDSPEngine] cleanupDeck error:', e);
+    }
+  }
+
+  /**
+   * Immediate Deck Hard-Reset:
+   * Pauses and cleans up both Deck A and Deck B to guarantee zero stale audio replay.
+   */
+  public hardResetDecks(preserveCrossfade = false): void {
+    if (!preserveCrossfade) {
+      this.cancelActiveTransition();
+    }
+    if (this.deckA) {
+      this.cleanupDeck(this.deckA);
+    }
+    if (this.deckB) {
+      this.cleanupDeck(this.deckB);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Clean Track Loading (Instant / Standalone)
   // ---------------------------------------------------------------------------
@@ -736,7 +777,12 @@ export class AudioDSPEngine {
     await this.resumeContext();
     if (currentRequestId !== this.playRequestId) return;
 
+    // Hard-reset active deck source before loading new src to prevent stale audio replay
     audio.pause();
+    audio.removeAttribute('src');
+    audio.src = '';
+    audio.load();
+
     audio.src = src;
     audio.currentTime = profile ? profile.introCueTime : 0;
     audio.playbackRate = 1.0;
@@ -751,11 +797,9 @@ export class AudioDSPEngine {
       activeSoundCheck.gain.setValueAtTime(profile ? profile.soundCheckGain : 1.0, now);
     }
 
-    // Silence the standby deck
+    // Silence and clean up old audio buffers on the standby deck
     const standbyAudio = this.getStandbyAudioElement();
-    standbyAudio.pause();
-    standbyAudio.currentTime = 0;
-    standbyAudio.playbackRate = 1.0;
+    this.cleanupDeck(standbyAudio);
     if (this.ctx) {
       this.resetDeckFilters(this.standbyDeck, 0.0);
     }
@@ -861,8 +905,7 @@ export class AudioDSPEngine {
       incomingSoundCheck.gain.setValueAtTime(scGain, now);
 
       if (isManualSkip) {
-        outgoingAudio.pause();
-        outgoingAudio.currentTime = 0;
+        this.cleanupDeck(outgoingAudio);
         this.resetDeckFilters(this.activeDeckId, 0.0);
         try {
           await incomingAudio.play();
@@ -881,8 +924,7 @@ export class AudioDSPEngine {
       const onEndedBoundary = () => {
         outgoingAudio.removeEventListener('ended', onEndedBoundary);
         incomingAudio.play().catch((err) => console.warn('Gapless playback error:', err));
-        outgoingAudio.pause();
-        outgoingAudio.currentTime = 0;
+        this.cleanupDeck(outgoingAudio);
         this.resetDeckFilters(this.activeDeckId, 0.0);
         this.finishTransition(incomingTrack, incomingProfile);
       };
@@ -1131,10 +1173,7 @@ export class AudioDSPEngine {
       if (progress >= 1.0) {
         this.autoMixAnimId = null;
 
-        outgoingAudio.pause();
-        outgoingAudio.currentTime = 0;
-        outgoingAudio.playbackRate = 1.0;
-
+        this.cleanupDeck(outgoingAudio);
         this.resetDeckFilters(this.activeDeckId, 0.0);
 
         if (this.ctx) {
@@ -1205,9 +1244,7 @@ export class AudioDSPEngine {
 
     this.transitionTimerId = setTimeout(() => {
       const outgoingAudio = this.getActiveAudioElement();
-      outgoingAudio.pause();
-      outgoingAudio.currentTime = 0;
-      outgoingAudio.playbackRate = 1.0;
+      this.cleanupDeck(outgoingAudio);
 
       this.resetDeckFilters(this.activeDeckId, 0.0);
       this.resetDeckFilters(this.standbyDeck, 1.0);
@@ -1233,6 +1270,8 @@ export class AudioDSPEngine {
     this.isTransitioning = false;
     this.transitionProgress = 0;
     this.transitionIncomingAudio = null;
+    const standbyAudio = this.getStandbyAudioElement();
+    this.cleanupDeck(standbyAudio);
     this.activeDeckId = this.activeDeckId === 'A' ? 'B' : 'A';
     this.currentTrackMetadata = incomingTrack;
     if (incomingProfile) this.currentProfile = incomingProfile;
@@ -1260,6 +1299,8 @@ export class AudioDSPEngine {
     this.isTransitioning = false;
     this.transitionProgress = 0;
     this.transitionIncomingAudio = null;
+    const standbyAudio = this.getStandbyAudioElement();
+    this.cleanupDeck(standbyAudio);
   }
 
 

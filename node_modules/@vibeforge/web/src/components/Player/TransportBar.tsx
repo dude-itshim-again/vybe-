@@ -110,6 +110,12 @@ export const TransportBar: React.FC<TransportBarProps> = ({
             <img
               src={artworkUrl}
               alt="Track Artwork"
+              onError={(e) => {
+                const target = e.currentTarget as HTMLImageElement;
+                if (!target.src.endsWith('logo.png')) {
+                  target.src = './logo.png';
+                }
+              }}
               className="w-11 h-11 rounded-xl object-cover border border-purple-500/30 shadow-md shrink-0"
             />
           ) : (

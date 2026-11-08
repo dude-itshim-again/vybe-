@@ -15,6 +15,7 @@ import {
   autoFetchLyrics,
   LRCLibRecord,
   convertLRCLibToLyricTrack,
+  getCachedLyricsByTrackId,
 } from './services/lrclibClient';
 import { fetchCatalogSearch } from './services/streamResolver';
 import { VybeStudioDrawer, StudioTab } from './components/Studio/VybeStudioDrawer';
@@ -48,6 +49,7 @@ import {
   Sparkles,
   Dna,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { SearchCatalogView } from './components/Echo/SearchCatalogView';
 import { MusicDnaDrawer } from './components/Echo/MusicDnaDrawer';
@@ -57,9 +59,13 @@ import {
   userLibrary,
   VybeUser,
   LIKED_SONGS_PLAYLIST_ID,
+  STORAGE_KEY_FAVORITES_V1,
+  STORAGE_KEY_PLAYLISTS_V1,
 } from './services/userLibraryService';
 import { SidebarLibrary } from './components/Library/SidebarLibrary';
 import { PlaylistHeroView } from './components/Library/PlaylistHeroView';
+import { AddToPlaylistModal } from './components/Library/AddToPlaylistModal';
+import { AmbientCanvas } from './components/Ambient/AmbientCanvas';
 import { TrackActionButtons } from './components/Library/TrackActionButtons';
 import { TrackActionPopover } from './components/Library/TrackActionPopover';
 import { UserProfileModal } from './components/Auth/UserProfileModal';
@@ -212,11 +218,12 @@ export const App: React.FC = () => {
   });
 
   const [, setSession] = useState<Session | null>(null);
+  const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
   // Frictionless Local-Only Storage (likedTracks, playlists, recentlyPlayed, lastPlayedTrack)
   const [likedTracks, setLikedTracks] = useState<TrackMetadata[]>(() => {
     try {
-      const saved = localStorage.getItem('vybe_liked_tracks');
+      const saved = localStorage.getItem(STORAGE_KEY_FAVORITES_V1) || localStorage.getItem('vybe_liked_tracks');
       if (saved) return JSON.parse(saved);
       return (userLibrary.getLikedTracks() as unknown as TrackMetadata[]) || [];
     } catch {
@@ -226,7 +233,7 @@ export const App: React.FC = () => {
 
   const [playlists, setPlaylists] = useState<any[]>(() => {
     try {
-      const saved = localStorage.getItem('vybe_playlists');
+      const saved = localStorage.getItem(STORAGE_KEY_PLAYLISTS_V1) || localStorage.getItem('vybe_playlists');
       if (saved) return JSON.parse(saved);
       return userLibrary.getUserPlaylists() || [];
     } catch {
@@ -254,30 +261,79 @@ export const App: React.FC = () => {
     }
   });
 
-  // Keep localStorage synced whenever state changes
+  // Dedicated Add-to-Playlist Modal state
+  const [isAddToPlaylistModalOpen, setIsAddToPlaylistModalOpen] = useState<boolean>(false);
+  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState<TrackMetadata | null>(null);
+
+  const handleOpenAddToPlaylist = useCallback((track: TrackMetadata | any) => {
+    setAddToPlaylistTrack(track as TrackMetadata);
+    setIsAddToPlaylistModalOpen(true);
+  }, []);
+
+  const handleDeletePlaylist = useCallback((playlistId: string) => {
+    userLibrary.deletePlaylist(playlistId);
+    setPlaylists(userLibrary.getUserPlaylists());
+    showToast('Playlist deleted', <Trash2 className="w-3.5 h-3.5 text-rose-400" />);
+    setActiveTab('home');
+  }, [showToast]);
+
+  // Zero-GPU Deep Coding / Background Idle Mode
   useEffect(() => {
+    const handleVisibility = () => {
+      const isIdle = document.hidden;
+      document.body.classList.toggle('vybe-idle', isIdle);
+    };
+    const handleBlur = () => {
+      document.body.classList.add('vybe-idle');
+    };
+    const handleFocus = () => {
+      if (!document.hidden) {
+        document.body.classList.remove('vybe-idle');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
+  // Keep localStorage synced whenever state changes (ONLY AFTER HYDRATION TO PREVENT WIPING PERMANENT DATA)
+  useEffect(() => {
+    if (!isHydrated) return;
     try {
-      localStorage.setItem('vybe_liked_tracks', JSON.stringify(likedTracks));
+      const serialized = JSON.stringify(likedTracks);
+      localStorage.setItem(STORAGE_KEY_FAVORITES_V1, serialized);
+      localStorage.setItem('vybe_liked_tracks', serialized);
     } catch (e) {
       console.warn('Failed to save liked tracks to localStorage', e);
     }
-  }, [likedTracks]);
+  }, [likedTracks, isHydrated]);
 
   useEffect(() => {
+    if (!isHydrated) return;
     try {
-      localStorage.setItem('vybe_playlists', JSON.stringify(playlists));
+      const serialized = JSON.stringify(playlists);
+      localStorage.setItem(STORAGE_KEY_PLAYLISTS_V1, serialized);
+      localStorage.setItem('vybe_playlists', serialized);
     } catch (e) {
       console.warn('Failed to save playlists to localStorage', e);
     }
-  }, [playlists]);
+  }, [playlists, isHydrated]);
 
   useEffect(() => {
+    if (!isHydrated) return;
     try {
       localStorage.setItem('vybe_recently_played', JSON.stringify(recentlyPlayed));
     } catch (e) {
       console.warn('Failed to save recently played to localStorage', e);
     }
-  }, [recentlyPlayed]);
+  }, [recentlyPlayed, isHydrated]);
 
   useEffect(() => {
     try {
@@ -416,14 +472,22 @@ export const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Synchronize User & Storage Stats
+  // Synchronize User & Storage Stats with Native Disk / LocalStorage Hydration
   useEffect(() => {
     const updateStats = () => {
       offlineVault.getStorageStats().then(setStorageStats);
       setCurrentUser(userLibrary.getCurrentUser());
       setLikedTracks(userLibrary.getLikedTracks() as unknown as TrackMetadata[]);
       setPlaylists(userLibrary.getUserPlaylists());
+      setRecentlyPlayed(userLibrary.getUserRecentlyPlayed());
+      if (userLibrary.getIsHydrated()) {
+        setIsHydrated(true);
+      }
     };
+    userLibrary.initPermanentStorage().then(() => {
+      updateStats();
+      setIsHydrated(true);
+    });
     updateStats();
 
     const unsubVault = offlineVault.subscribe(updateStats);
@@ -434,6 +498,48 @@ export const App: React.FC = () => {
       unsubUser();
     };
   }, []);
+
+  // Initialize Low-Spec / Performance Mode default on startup
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('vybe_performance_mode');
+      const isLowSpecHardware =
+        typeof navigator !== 'undefined' &&
+        navigator.hardwareConcurrency != null &&
+        navigator.hardwareConcurrency <= 4;
+      const shouldEnable = stored === 'true' || (stored === null && isLowSpecHardware);
+      if (shouldEnable) {
+        document.documentElement.classList.add('perf-mode-low');
+      } else {
+        document.documentElement.classList.remove('perf-mode-low');
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, []);
+
+  // Over-The-Air (OTA) Auto-Updater State & Notification Hook
+  const [updaterStatus, setUpdaterStatus] = useState<{
+    status: 'checking' | 'available' | 'not-available' | 'downloading' | 'ready' | 'error';
+    version?: string;
+    percent?: number;
+    error?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.electron?.onUpdaterStatus) {
+      const unsub = window.electron.onUpdaterStatus((data) => {
+        setUpdaterStatus(data);
+        if (data.status === 'ready') {
+          showToast(
+            `Update v${data.version || ''} downloaded! Click to restart & apply.`,
+            <Sparkles className="w-3.5 h-3.5 text-[#E86538]" />
+          );
+        }
+      });
+      return () => unsub();
+    }
+  }, [showToast]);
 
   // Supabase Auth & Cloud Library Session State & Magic Link Auto-Login
   useEffect(() => {
@@ -470,6 +576,7 @@ export const App: React.FC = () => {
       setLikedTracks(userLibrary.getLikedTracks() as unknown as TrackMetadata[]);
       setPlaylists(userLibrary.getUserPlaylists());
       setRecentlyPlayed(userLibrary.getUserRecentlyPlayed());
+      setIsHydrated(true);
 
       showToast(`Welcome back, ${cleanName}!`, <Sparkles className="w-3.5 h-3.5 text-[#E86538]" />);
     };
@@ -490,12 +597,15 @@ export const App: React.FC = () => {
       if (session?.user) {
         await handleAuthUserSession(session.user);
       } else if (event === 'SIGNED_OUT') {
-        localStorage.removeItem('vybe_authenticated_user');
-        setAuthUser(null);
-        setCurrentUser(userLibrary.getCurrentUser());
-        setLikedTracks([]);
-        setPlaylists([]);
-        setRecentlyPlayed([]);
+        const hadAuth = localStorage.getItem('vybe_authenticated_user');
+        if (hadAuth) {
+          localStorage.removeItem('vybe_authenticated_user');
+          setAuthUser(null);
+          setCurrentUser(userLibrary.getCurrentUser());
+          setLikedTracks(userLibrary.getLikedTracks() as unknown as TrackMetadata[]);
+          setPlaylists(userLibrary.getUserPlaylists());
+          setRecentlyPlayed(userLibrary.getUserRecentlyPlayed());
+        }
       }
     });
 
@@ -540,20 +650,13 @@ export const App: React.FC = () => {
         setLyricsTrack(incomingLyrics);
       } else {
         setOfflineLyricsLines(null);
-        autoFetchLyrics(
-          {
-            title: incomingTrack.title,
-            artist: incomingTrack.artist,
-            album: incomingTrack.album,
-            searchQuery: incomingTrack.searchQuery,
-            songId: incomingTrack.id,
-          },
-          incomingTrack.duration
-        ).then((result) => {
-          setLyricsTrack(result.track);
-          setLyricsCandidates(result.candidates);
-          setActiveRecordId(result.record.id);
-        });
+        const memCached = getCachedLyricsByTrackId(incomingTrack.id);
+        if (memCached) {
+          const track = convertLRCLibToLyricTrack(memCached, incomingTrack.duration);
+          track.trackId = incomingTrack.id;
+          setLyricsTrack(track);
+          setActiveRecordId(memCached.id);
+        }
       }
 
       // Discover vibe videos
@@ -696,71 +799,110 @@ export const App: React.FC = () => {
     }
   }, [state.currentTrack, recordRecentlyPlayed]);
 
-  // Automatically guarantee lyrics are loaded whenever active track changes
+  // Centralized, Debounced & Abortable Lyrics Loader
+  // Stops LRCLIB 429 Too Many Requests and matches against exact audio duration (<= 3s)
+  const realAudioDurationSec = Math.round(state.duration || (engine ? engine.getDuration() : 0));
+  const lyricsAbortControllerRef = useRef<AbortController | null>(null);
+  const lyricsDebounceTimerRef = useRef<any>(null);
+  const lastResolvedLyricsKeyRef = useRef<string>('');
+
   useEffect(() => {
     const cur = state.currentTrack;
     if (!cur || !cur.title) return;
 
+    const trackKey = `${cur.id || cur.title}_${realAudioDurationSec || Math.round(cur.duration || 0)}`;
+
+    // 1. If offline lyrics exist, use immediately without network
     offlineVault.getOfflineLyrics(cur.id).then((cached) => {
       if (cached && cached.length > 0) {
         setOfflineLyricsLines(cached);
         return;
       }
 
-      if (!lyricsTrack || (lyricsTrack.title !== cur.title && lyricsTrack.trackId !== cur.id)) {
-        autoFetchLyrics(
-          {
-            title: cur.title,
-            artist: cur.artist,
-            album: cur.album,
-            searchQuery: cur.searchQuery,
-            songId: cur.id,
-          },
-          cur.duration || (engine ? engine.getDuration() : 0)
-        )
-          .then((result) => {
+      // 2. Check if we already have matching lyrics loaded in state
+      if (lyricsTrack && (lyricsTrack.trackId === cur.id || lyricsTrack.title === cur.title)) {
+        const loadedDur =
+          lyricsTrack.duration ||
+          (lyricsTrack.lines?.length ? lyricsTrack.lines[lyricsTrack.lines.length - 1].endTime : 0);
+        // If duration is within <= 3 seconds of real audio duration, or duration metadata not ready yet
+        if (realAudioDurationSec <= 0 || (loadedDur > 0 && Math.abs(loadedDur - realAudioDurationSec) <= 3)) {
+          return;
+        }
+      }
+
+      // 3. Check memory & localStorage cache
+      const memCached = getCachedLyricsByTrackId(cur.id);
+      if (memCached) {
+        const converted = convertLRCLibToLyricTrack(
+          memCached,
+          realAudioDurationSec > 0 ? realAudioDurationSec : cur.duration
+        );
+        converted.trackId = cur.id;
+        const loadedDur =
+          converted.duration ||
+          (converted.lines?.length ? converted.lines[converted.lines.length - 1].endTime : 0);
+        if (realAudioDurationSec <= 0 || (loadedDur > 0 && Math.abs(loadedDur - realAudioDurationSec) <= 3)) {
+          setLyricsTrack(converted);
+          setActiveRecordId(memCached.id);
+          lastResolvedLyricsKeyRef.current = trackKey;
+          return;
+        }
+      }
+
+      // 4. If we already completed fetch for this exact track and duration, skip
+      if (lastResolvedLyricsKeyRef.current === trackKey) return;
+
+      // 5. Abort in-flight requests and clear pending debounce timers
+      if (lyricsAbortControllerRef.current) {
+        lyricsAbortControllerRef.current.abort();
+        lyricsAbortControllerRef.current = null;
+      }
+      if (lyricsDebounceTimerRef.current) {
+        clearTimeout(lyricsDebounceTimerRef.current);
+        lyricsDebounceTimerRef.current = null;
+      }
+
+      const controller = new AbortController();
+      lyricsAbortControllerRef.current = controller;
+
+      lyricsDebounceTimerRef.current = setTimeout(async () => {
+        try {
+          const targetDuration = realAudioDurationSec > 0 ? realAudioDurationSec : Math.round(cur.duration || 0);
+          const result = await autoFetchLyrics(
+            {
+              title: cur.title,
+              artist: cur.artist,
+              album: cur.album,
+              searchQuery: cur.searchQuery,
+              songId: cur.id,
+            },
+            targetDuration,
+            undefined,
+            controller.signal
+          );
+
+          if (!controller.signal.aborted) {
             setLyricsTrack(result.track);
             setLyricsCandidates(result.candidates);
             setActiveRecordId(result.record.id);
-          })
-          .catch((err) => {
-            console.warn('Auto fetch lyrics failed:', err);
-          });
-      }
+            lastResolvedLyricsKeyRef.current = trackKey;
+          }
+        } catch (err: any) {
+          if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+            console.warn('[Lyrics] Debounced fetch failed:', err);
+          }
+        }
+      }, 300);
     });
-  }, [state.currentTrack, lyricsTrack, engine]);
 
-  // Auto-Reverify Duration Once Audio Metadata Loads (when duration > 0 and mismatch > 6s)
-  const realAudioDurationSec = Math.round(state.duration || (engine ? engine.getDuration() : 0));
-  const lastReverifiedAudioDurationRef = useRef<number>(0);
-
-  useEffect(() => {
-    const cur = state.currentTrack;
-    if (!cur || !cur.title || realAudioDurationSec <= 0) return;
-    if (lastReverifiedAudioDurationRef.current === realAudioDurationSec) return;
-
-    const loadedDur = lyricsTrack?.duration || (lyricsTrack?.lines?.length ? lyricsTrack.lines[lyricsTrack.lines.length - 1].endTime : 0);
-    if (loadedDur > 0 && Math.abs(loadedDur - realAudioDurationSec) > 6) {
-      lastReverifiedAudioDurationRef.current = realAudioDurationSec;
-      autoFetchLyrics(
-        {
-          title: cur.title,
-          artist: cur.artist,
-          album: cur.album,
-          searchQuery: cur.searchQuery,
-          songId: cur.id,
-        },
-        realAudioDurationSec
-      )
-        .then((result) => {
-          setLyricsTrack(result.track);
-          setLyricsCandidates(result.candidates);
-          setActiveRecordId(result.record.id);
-        })
-        .catch((err) => {
-          console.warn('[AutoReverify] Failed to re-fetch lyrics with exact duration:', err);
-        });
-    }
+    return () => {
+      if (lyricsDebounceTimerRef.current) {
+        clearTimeout(lyricsDebounceTimerRef.current);
+      }
+      if (lyricsAbortControllerRef.current) {
+        lyricsAbortControllerRef.current.abort();
+      }
+    };
   }, [state.currentTrack, realAudioDurationSec, lyricsTrack, engine]);
 
   // Extract / adapt ambient aurora mesh colors based on active track artwork
@@ -1368,38 +1510,13 @@ export const App: React.FC = () => {
       className="relative w-screen h-screen overflow-hidden bg-[#07080C] text-white font-sans select-none flex flex-col selection:bg-[#E86538]/30"
     >
       {/* ─────────────────────────────────────────────────────────────────────────
-          SILKY CONTINUOUSLY MOVING MULTI-COLOR AURORA MESH BACKGROUND
-          Deep Indigo (#312E81), Vibrant Electric Ocean Blue (#2563EB), Rich Twilight Violet (#6D28D9)
+          ZERO-GPU ULTRA-EFFICIENT AMBIENT CANVAS BACKGROUND (64x64)
+          Replaces 3 giant 125px-blurred animated divs with a low-res canvas
+          that repaints once when artwork changes, dropping GPU load to ~0%.
           ───────────────────────────────────────────────────────────────────────── */}
-      <div
-        className="aurora-orb-1 fixed top-[-100px] right-[5%] w-[850px] h-[850px] rounded-full pointer-events-none transition-all duration-700 ease-out"
-        style={{
-          background: `radial-gradient(circle, ${auroraColors.orb1} 0%, ${auroraColors.orb2} 70%, transparent 100%)`,
-          filter: 'blur(125px)',
-          opacity: 0.55,
-          mixBlendMode: 'screen',
-          transform: `translate3d(${mouseOffset.x * -35}px, ${mouseOffset.y * -35}px, 0) scale(calc(1 + var(--bass-energy, 0) * 0.4))`,
-        }}
-      />
-      <div
-        className="aurora-orb-2 fixed top-[25%] left-[-100px] w-[900px] h-[900px] rounded-full pointer-events-none transition-all duration-700 ease-out"
-        style={{
-          background: `radial-gradient(circle, ${auroraColors.orb2} 0%, ${auroraColors.orb3} 65%, transparent 100%)`,
-          filter: 'blur(125px)',
-          opacity: 0.5,
-          mixBlendMode: 'screen',
-          transform: `translate3d(${mouseOffset.x * 45}px, ${mouseOffset.y * 45}px, 0) scale(calc(1 + var(--bass-energy, 0) * 0.35))`,
-        }}
-      />
-      <div
-        className="aurora-orb-3 fixed bottom-[-140px] right-[25%] w-[800px] h-[750px] rounded-full pointer-events-none transition-all duration-700 ease-out"
-        style={{
-          background: `radial-gradient(circle, ${auroraColors.orb3} 0%, ${auroraColors.orb1} 60%, transparent 100%)`,
-          filter: 'blur(125px)',
-          opacity: 0.52,
-          mixBlendMode: 'screen',
-          transform: `translate3d(${mouseOffset.x * -20}px, ${mouseOffset.y * 30}px, 0) scale(calc(1 + var(--bass-energy, 0) * 0.45))`,
-        }}
+      <AmbientCanvas
+        artworkUrl={state.currentTrack?.artworkUrl}
+        colors={auroraColors}
       />
 
       {/* 2. Apple Dark Liquid Glass Auth Screen (once splashDone && !authUser) */}
@@ -1567,6 +1684,37 @@ export const App: React.FC = () => {
             onLogout={handleLogout}
           />
 
+          {/* OTA Auto-Updater Live Banner */}
+          {updaterStatus && (updaterStatus.status === 'downloading' || updaterStatus.status === 'ready') && (
+            <div className="mx-5 sm:mx-8 mt-3 mb-1">
+              {updaterStatus.status === 'downloading' ? (
+                <div className="flex items-center justify-between px-4 py-2 rounded-xl bg-white/[0.06] border border-white/10 backdrop-blur-md text-xs text-white/80">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#E86538]" />
+                    <span>Downloading desktop update ({updaterStatus.percent || 0}%)...</span>
+                  </div>
+                  <div className="w-24 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-[#E86538] to-[#FF8A65] transition-all duration-300"
+                      style={{ width: `${updaterStatus.percent || 0}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => window.electron?.restartAndInstallUpdate?.()}
+                  className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#E86538] to-[#FF8A65] text-white text-xs font-semibold shadow-lg hover:brightness-110 active:scale-[0.99] transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" />
+                    <span>Vybe v{updaterStatus.version || ''} update is ready!</span>
+                  </div>
+                  <span className="underline decoration-white/40">Restart & Install Now →</span>
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Smooth Vertical Scroll Container for Main Stage */}
           <main className="flex-1 h-[calc(100vh-146px)] overflow-y-auto overflow-x-hidden px-5 sm:px-8 custom-scrollbar">
             {/* VIEW 1: Editorial Discover View (Form / Apple visionOS Dark Liquid Glass) */}
@@ -1576,7 +1724,7 @@ export const App: React.FC = () => {
                 onPlayBatch={handlePlayTrackBatch}
                 onPlayBlendWithAutoMix={handlePlayBlendWithAutoMix}
                 onAddToQueue={handleAddToQueue}
-                onOpenAddToPlaylist={handleOpenTrackMenu}
+                onOpenAddToPlaylist={handleOpenAddToPlaylist}
                 onToggleLike={handleToggleLikeWithToast}
                 currentTrack={state.currentTrack}
                 isPlaying={state.isPlaying}
@@ -1593,7 +1741,7 @@ export const App: React.FC = () => {
                 <SearchCatalogView
                   onPlayTrack={handlePlayCatalogTrack}
                   onAddToQueue={handleAddToQueue}
-                  onOpenAddToPlaylist={handleOpenTrackMenu}
+                  onOpenAddToPlaylist={handleOpenAddToPlaylist}
                   onToggleLike={handleToggleLikeWithToast}
                   currentTrackId={state.currentTrack.id}
                   searchQuery={topSearchQuery}
@@ -1619,12 +1767,9 @@ export const App: React.FC = () => {
                   playlistId={selectedPlaylistId}
                   onPlayTrack={handlePlayCatalogTrack}
                   onPlayAll={handlePlayAllTracks}
-                  onOpenAddToPlaylist={handleOpenTrackMenu}
+                  onOpenAddToPlaylist={handleOpenAddToPlaylist}
                   onToggleLike={handleToggleLikeWithToast}
-                  onDeletePlaylist={() => {
-                    showToast('Playlist deleted', <Trash2 className="w-3.5 h-3.5 text-rose-400" />);
-                    setActiveTab('home');
-                  }}
+                  onDeletePlaylist={handleDeletePlaylist}
                   onNavigateTab={(tab) => setActiveTab(tab as EditorialTab)}
                   currentTrackId={state.currentTrack.id}
                   isPlaying={state.isPlaying}
@@ -1639,7 +1784,7 @@ export const App: React.FC = () => {
                   playlistId={LIKED_SONGS_PLAYLIST_ID}
                   onPlayTrack={handlePlayCatalogTrack}
                   onPlayAll={handlePlayAllTracks}
-                  onOpenAddToPlaylist={handleOpenTrackMenu}
+                  onOpenAddToPlaylist={handleOpenAddToPlaylist}
                   onToggleLike={handleToggleLikeWithToast}
                   onNavigateTab={(tab) => setActiveTab(tab as EditorialTab)}
                   currentTrackId={state.currentTrack.id}
@@ -1655,7 +1800,7 @@ export const App: React.FC = () => {
                 onPlayTrack={handlePlayCatalogTrack}
                 onPlayBatch={handlePlayTrackBatch}
                 onAddToQueue={handleAddToQueue}
-                onOpenAddToPlaylist={handleOpenTrackMenu}
+                onOpenAddToPlaylist={handleOpenAddToPlaylist}
                 onToggleLike={handleToggleLikeWithToast}
                 onClearHistory={() => {
                   setRecentlyPlayed([]);
@@ -1695,6 +1840,8 @@ export const App: React.FC = () => {
                           src={state.currentTrack.artworkUrl}
                           alt={state.currentTrack.title}
                           className="w-full h-full object-cover"
+                          loading="lazy"
+                          decoding="async"
                         />
                       ) : (
                         <Disc className={`w-12 h-12 text-[#E86538] ${state.isPlaying ? 'animate-spin' : ''}`} />
@@ -1723,7 +1870,7 @@ export const App: React.FC = () => {
                         </span>
                         <TrackActionButtons
                           track={state.currentTrack}
-                          onOpenAddToPlaylist={handleOpenTrackMenu}
+                          onOpenAddToPlaylist={handleOpenAddToPlaylist}
                           onToggleLike={handleToggleLikeWithToast}
                           size="sm"
                         />
@@ -1828,7 +1975,13 @@ export const App: React.FC = () => {
 
                             <div className="col-span-5 sm:col-span-4 flex items-center gap-2.5 truncate">
                               {track.artworkUrl ? (
-                                <img src={track.artworkUrl} alt={track.title} className="w-7 h-7 rounded-md object-cover border border-white/10 shrink-0" />
+                                <img
+                                  src={track.artworkUrl}
+                                  alt={track.title}
+                                  className="w-7 h-7 rounded-md object-cover border border-white/10 shrink-0"
+                                  loading="lazy"
+                                  decoding="async"
+                                />
                               ) : (
                                 <Music className={`w-4 h-4 shrink-0 ${isCurrent ? 'text-[#E86538]' : 'text-white/40'}`} />
                               )}
@@ -1854,7 +2007,7 @@ export const App: React.FC = () => {
 
                               <TrackActionButtons
                                 track={track}
-                                onOpenAddToPlaylist={handleOpenTrackMenu}
+                                onOpenAddToPlaylist={handleOpenAddToPlaylist}
                                 onToggleLike={handleToggleLikeWithToast}
                                 size="sm"
                               />
@@ -1910,6 +2063,8 @@ export const App: React.FC = () => {
         onToggleShuffle={handleToggleShuffle}
         repeatMode={repeatMode}
         onToggleRepeat={handleToggleRepeat}
+        onToggleLike={handleToggleLikeWithToast}
+        onOpenAddToPlaylist={handleOpenAddToPlaylist}
       />
 
       {/* AutoMix DJ Transition Live HUD */}
@@ -2060,6 +2215,17 @@ export const App: React.FC = () => {
           showToast(`Saved to '${pl.name}'`, <FolderPlus className="w-3.5 h-3.5 text-emerald-400" />);
         }}
         initialTrack={createPlaylistInitialTrack}
+      />
+
+      {/* Apple Dark Liquid Glass Add To Playlist Modal */}
+      <AddToPlaylistModal
+        isOpen={isAddToPlaylistModalOpen}
+        onClose={() => {
+          setIsAddToPlaylistModalOpen(false);
+          setAddToPlaylistTrack(null);
+        }}
+        track={addToPlaylistTrack}
+        onShowToast={showToast}
       />
 
       {/* Floating Apple Liquid Glass Track Action Popover Menu */}

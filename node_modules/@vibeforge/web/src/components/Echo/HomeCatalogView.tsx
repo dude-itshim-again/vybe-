@@ -185,11 +185,17 @@ export const HomeCatalogView: React.FC<HomeCatalogViewProps> = ({
                     >
                       {/* Artwork & Hover Play Button */}
                       <div className="relative aspect-square rounded-xl overflow-hidden bg-black/60 border border-white/5">
-                        {track.artworkUrl ? (
+                        {track.artworkUrl || track.coverUrl || track.image ? (
                           <img
-                            src={track.artworkUrl}
+                            src={track.artworkUrl || track.coverUrl || track.image}
                             alt={track.title}
                             loading="lazy"
+                            onError={(e) => {
+                              const target = e.currentTarget as HTMLImageElement;
+                              if (!target.src.endsWith('logo.png')) {
+                                target.src = './logo.png';
+                              }
+                            }}
                             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                           />
                         ) : (

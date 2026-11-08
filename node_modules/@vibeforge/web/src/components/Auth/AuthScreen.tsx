@@ -316,7 +316,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         {/* Brand Header: Logo + Vybe. */}
         <div className="flex items-center gap-3 justify-center mb-5">
           <img
-            src="/logo.png"
+            src="./logo.png"
             alt="Vybe"
             className="w-12 h-12 rounded-full object-cover border border-white/20 shadow-[0_0_24px_rgba(255,255,255,0.2)]"
           />

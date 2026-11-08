@@ -27,6 +27,7 @@ export interface OfflineTrackRecord {
   lyrics: LyricLineItem[];    // Pre-fetched synced lyrics so Kinetic Stage works 100% offline!
   sizeBytes: number;
   downloadedAt: number;
+  localFilePath?: string;     // Real OS disk path inside Music/Vybe Downloads
 }
 
 export interface StorageStats {
@@ -299,6 +300,20 @@ class OfflineVault {
         // Wait for lyrics and artwork
         const [lyrics, artworkDataUrl] = await Promise.all([lyricsPromise, artworkPromise]);
 
+        // Native File Downloader in Electron: saves real audio file to Music/Vybe Downloads
+        let localFilePath: string | undefined = (track as any).localFilePath;
+        if (!localFilePath && typeof window !== 'undefined' && window.electron?.downloadTrack) {
+          try {
+            const dlRes = await window.electron.downloadTrack(track);
+            if (dlRes?.success && dlRes.localFilePath) {
+              localFilePath = dlRes.localFilePath;
+              (track as any).localFilePath = dlRes.localFilePath;
+            }
+          } catch (dlErr) {
+            console.warn('[OfflineVault] Electron native download fallback:', dlErr);
+          }
+        }
+
         const record: OfflineTrackRecord = {
           id: track.id,
           userId,
@@ -311,6 +326,7 @@ class OfflineVault {
           lyrics,
           sizeBytes: audioBlob.size,
           downloadedAt: Date.now(),
+          localFilePath,
         };
 
         // 4. Save to IndexedDB
@@ -438,6 +454,7 @@ class OfflineVault {
         duration: r.duration,
         artworkUrl: r.artworkDataUrl,
         streamUrl: streamUrl || '',
+        localFilePath: r.localFilePath,
         quality: '320kbps',
         source: 'local',
         sourceType: 'stream',

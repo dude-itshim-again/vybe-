@@ -19,10 +19,21 @@ export function useAudioReactiveCSS(
   onFrameRef.current = onFrame;
 
   useEffect(() => {
-    let animationFrameId: number;
+    let animationFrameId: number | null = null;
     const rootStyle = document.documentElement.style;
 
+    if (!isPlaying || !engine) {
+      rootStyle.setProperty('--bass-energy', '0');
+      return;
+    }
+
     const renderLoop = () => {
+      // If Low-Spec / Performance mode is active, skip expensive 60fps analysis
+      if (document.documentElement.classList.contains('perf-mode-low')) {
+        rootStyle.setProperty('--bass-energy', '0');
+        return;
+      }
+
       if (engine && isPlayingRef.current) {
         const bass = engine.getSubBassEnergy();
         const reduction = engine.getReduction();
@@ -33,19 +44,20 @@ export function useAudioReactiveCSS(
         if (onFrameRef.current) {
           onFrameRef.current(bass, reduction);
         }
+
+        animationFrameId = requestAnimationFrame(renderLoop);
       } else {
-        // Decay to zero when paused
         rootStyle.setProperty('--bass-energy', '0');
       }
-
-      animationFrameId = requestAnimationFrame(renderLoop);
     };
 
     animationFrameId = requestAnimationFrame(renderLoop);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
       rootStyle.setProperty('--bass-energy', '0');
     };
-  }, [engine]);
+  }, [engine, isPlaying]);
 }

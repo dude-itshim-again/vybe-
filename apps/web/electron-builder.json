@@ -9,6 +9,13 @@
     "electron/**/*",
     "package.json"
   ],
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "dude-itshim-again",
+      "repo": "vybe-"
+    }
+  ],
   "win": {
     "target": [
       {

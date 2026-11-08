@@ -13,9 +13,16 @@ import { fetchCatalogSearch } from './streamResolver';
 
 const STORAGE_KEY = 'vybe_echo_brain_enabled';
 
+function getTrackKey(title?: string, artist?: string): string {
+  const t = (title || '').toLowerCase().trim();
+  const a = (artist || '').toLowerCase().trim();
+  return `${t}::${a}`;
+}
+
 class EchoBrainService {
   private isEnabled: boolean = true;
   private playedTrackIds: Set<string> = new Set();
+  private playedTrackKeys: Set<string> = new Set();
   private isFetching: boolean = false;
   private lastQueriedSeed: string = '';
 
@@ -52,9 +59,12 @@ class EchoBrainService {
     return this.isEnabled;
   }
 
-  public recordPlayedTrack(trackId: string): void {
+  public recordPlayedTrack(trackId: string, title?: string, artist?: string): void {
     if (trackId) {
       this.playedTrackIds.add(trackId);
+    }
+    if (title) {
+      this.playedTrackKeys.add(getTrackKey(title, artist));
     }
   }
 
@@ -71,7 +81,7 @@ class EchoBrainService {
     if (!currentTrack || !currentTrack.id) return;
 
     // Record active track as played
-    this.recordPlayedTrack(currentTrack.id);
+    this.recordPlayedTrack(currentTrack.id, currentTrack.title, currentTrack.artist);
 
     // Calculate how many tracks remain after current song
     const remainingCount = queue.length - 1 - activeIndex;
@@ -104,21 +114,29 @@ class EchoBrainService {
         return;
       }
 
-
-      // Filter out songs already played or already in the current queue
+      // Filter out songs already played or already in the current queue by BOTH ID and normalized title::artist
       const existingIds = new Set([
         ...this.playedTrackIds,
         ...queue.map((t) => t.id),
       ]);
+      const existingKeys = new Set([
+        ...this.playedTrackKeys,
+        ...queue.map((t) => getTrackKey(t.title, t.artist)),
+      ]);
 
-      const freshCandidates = rawCandidates.filter((t) => !existingIds.has(t.id));
+      const freshCandidates = rawCandidates.filter((t) => {
+        if (existingIds.has(t.id)) return false;
+        const key = getTrackKey(t.title, t.artist);
+        if (existingKeys.has(key)) return false;
+        return true;
+      });
 
       if (freshCandidates.length > 0) {
         const toAppend = freshCandidates.slice(0, 3);
         console.log(`[EchoBrain] Appending ${toAppend.length} matching songs to queue:`, toAppend.map(t => t.title));
         
         for (const track of toAppend) {
-          this.playedTrackIds.add(track.id);
+          this.recordPlayedTrack(track.id, track.title, track.artist);
         }
 
         onAppendTracks(toAppend);

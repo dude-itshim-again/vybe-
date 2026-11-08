@@ -66,15 +66,15 @@ export interface CleanedMetadata {
 export function cleanMetadata(title: string, artist?: string): CleanedMetadata {
   let cleanTitle = cleanHtmlEntities(title || '');
 
-  // 1. Strip bracketed/parenthetical noise
+  // 1. Strip bracketed/parenthetical noise like (Official Audio), (From "..."), [Slowed + Reverb]
   cleanTitle = cleanTitle.replace(
-    /[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?|hd|hq|4k|remastered(?:\s*\d{4})?|from\s*["'].*?["']|feat\.?.*|ft\.?.*|prod\.?.*)\s*[\)\]]/gi,
+    /[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?|hd|hq|4k|remastered(?:\s*\d{4})?|from\s*["'].*?["']|feat\.?.*|ft\.?.*|prod\.?.*|slowed(?:\s*\+\s*reverb)?|reverb|sped\s*up|speed\s*up|deluxe(?:\s*edition)?|lofi(?:\s*flip)?)\s*[\)\]]/gi,
     ''
   );
 
   // 2. Strip trailing dash suffixes like - Remastered, - Single Version, - Original Motion Picture Soundtrack
   cleanTitle = cleanTitle.replace(
-    /[-–—|]\s*(?:remastered(?:\s*\d{4})?|single\s*version|original\s*motion\s*picture\s*soundtrack|soundtrack|ost|official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|audio|video|visualizer|4k|hd|hq)\s*$/gi,
+    /[-–—|]\s*(?:remastered(?:\s*\d{4})?|single\s*version|original\s*motion\s*picture\s*soundtrack|soundtrack|ost|official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|audio|video|visualizer|4k|hd|hq|slowed(?:\s*\+\s*reverb)?)\s*$/gi,
     ''
   );
 
@@ -176,32 +176,27 @@ export function scoreCandidate(
     }
   }
 
-  // Synced Lyrics Bonus (+50 pts): Strongly prefer candidates where item.syncedLyrics is non-empty over plain item.plainLyrics.
+  // Synced Lyrics Requirement (+60 pts vs -100 pts)
   if (item.syncedLyrics && item.syncedLyrics.trim().length > 0) {
-    score += 50;
+    score += 60;
   } else if (item.plainLyrics && item.plainLyrics.trim().length > 0) {
-    score += 10;
+    score += 5;
   } else {
     score -= 100;
   }
 
-  // Duration Lock (+40 to -100 pts):
-  // If targetDuration > 0 and item.duration > 0:
-  //   diff = Math.abs(item.duration - targetDuration)
-  //   diff <= 2s -> +40 pts
-  //   diff <= 5s -> +25 pts
-  //   diff <= 10s -> +5 pts
-  //   diff > 12s -> -100 pts (reject wrong radio edit / extended remix).
+  // Strict Duration Lock against playing audio duration (+70 to -120 pts):
+  // Picks candidates whose duration is within <= 3 seconds of the actual playing audio duration!
   if (targetDuration && targetDuration > 0 && item.duration && item.duration > 0) {
     const diff = Math.abs(item.duration - targetDuration);
-    if (diff <= 2) {
-      score += 40;
-    } else if (diff <= 5) {
+    if (diff <= 3) {
+      score += 70; // Exact <= 3s duration lock
+    } else if (diff <= 6) {
       score += 25;
     } else if (diff <= 10) {
       score += 5;
     } else if (diff > 12) {
-      score -= 100;
+      score -= 120;
     }
   }
 
@@ -265,6 +260,34 @@ export function setCachedLyrics(artist: string, title: string, record: LRCLibRec
     localStorage.setItem(key, JSON.stringify(record));
   } catch (e) {
     console.warn('Error saving lyric cache:', e);
+  }
+}
+
+/**
+ * Checks localStorage cache by track.id so the exact same song never hits LRCLIB twice.
+ */
+export function getCachedLyricsByTrackId(trackId: string): LRCLibRecord | null {
+  if (!trackId) return null;
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = localStorage.getItem(`${CACHE_PREFIX}id_${trackId}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as LRCLibRecord;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saves lyric record to localStorage cache by track.id.
+ */
+export function setCachedLyricsByTrackId(trackId: string, record: LRCLibRecord): void {
+  if (!trackId || !record) return;
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    localStorage.setItem(`${CACHE_PREFIX}id_${trackId}`, JSON.stringify(record));
+  } catch (e) {
+    console.warn('Error saving track ID lyric cache:', e);
   }
 }
 
@@ -532,7 +555,8 @@ export async function autoFetchLyrics(
     songId?: string;
   },
   audioDuration?: number,
-  onStatusChange?: (status: string) => void
+  onStatusChange?: (status: string) => void,
+  signal?: AbortSignal
 ): Promise<AutoFetchResult> {
   const { cleanTitle, primaryArtist, allArtists } = cleanMetadata(
     metadata.title,
@@ -543,11 +567,16 @@ export async function autoFetchLyrics(
 
   onStatusChange?.('Extracting track metadata...');
 
-  // 0. Cache Check
-  const cached = getCachedLyrics(primaryArtist, cleanTitle) || getCachedLyrics(primaryArtist, rawTitle);
+  // 0. Cache Check by trackId first, then by artist & cleanTitle
+  const cachedById = metadata.songId ? getCachedLyricsByTrackId(metadata.songId) : null;
+  const cached = cachedById || getCachedLyrics(primaryArtist, cleanTitle) || getCachedLyrics(primaryArtist, rawTitle);
   if (cached && (cached.syncedLyrics || cached.plainLyrics)) {
     onStatusChange?.(`Synced Lyrics Locked (Cached: ${cached.artistName} - ${cached.trackName})`);
     const track = convertLRCLibToLyricTrack(cached, safeAudioDuration);
+    if (metadata.songId) {
+      setCachedLyricTrack(metadata.songId, track);
+      setCachedLyricsByTrackId(metadata.songId, cached);
+    }
     setCachedLyricTrack(rawTitle, track);
     setCachedLyricTrack(cleanTitle, track);
     return {
@@ -573,72 +602,104 @@ export async function autoFetchLyrics(
   const hasSyncedResult = () =>
     Array.from(candidateMap.values()).some((c) => Boolean(c.syncedLyrics && c.syncedLyrics.trim().length > 0));
 
+  let isRateLimited = false;
+
   // Pass 0: Exact Direct GET with targetDuration
-  if (cleanTitle && primaryArtist) {
+  if (cleanTitle && primaryArtist && !signal?.aborted) {
     try {
       const getUrl = `${LRCLIB_BASE}/get?track_name=${encodeURIComponent(cleanTitle)}&artist_name=${encodeURIComponent(primaryArtist)}${safeAudioDuration > 0 ? `&duration=${Math.round(safeAudioDuration)}` : ''}`;
-      const getRes = await fetch(getUrl);
-      if (getRes.ok) {
+      const getRes = await fetch(getUrl, { signal });
+      if (getRes.status === 429) {
+        isRateLimited = true;
+      } else if (getRes.ok) {
         const exact = (await getRes.json()) as LRCLibRecord;
-        if (exact && (exact.syncedLyrics || exact.plainLyrics)) {
+        if (exact && exact.syncedLyrics) {
+          // If duration is within <= 3 seconds of actual audio duration, we have the exact studio match!
+          const durDiff = safeAudioDuration > 0 && exact.duration ? Math.abs(exact.duration - safeAudioDuration) : 0;
+          if (durDiff <= 3) {
+            const parsedTrack = convertLRCLibToLyricTrack(exact, safeAudioDuration);
+            if (metadata.songId) {
+              setCachedLyricsByTrackId(metadata.songId, exact);
+              setCachedLyricTrack(metadata.songId, parsedTrack);
+            }
+            setCachedLyrics(primaryArtist, cleanTitle, exact);
+            setCachedLyricTrack(rawTitle, parsedTrack);
+            setCachedLyricTrack(cleanTitle, parsedTrack);
+            onStatusChange?.(`Synced Lyrics Locked (${exact.artistName} - ${exact.trackName})`);
+            return {
+              track: parsedTrack,
+              record: exact,
+              candidates: [exact],
+              isFallbackInterpolated: false,
+              isDemoFallback: false,
+            };
+          }
+          addCandidates([exact]);
+        } else if (exact && exact.plainLyrics) {
           addCandidates([exact]);
         }
       }
     } catch {}
   }
 
-  // Pass 1: Query by track_name & artist_name
-  if (cleanTitle && primaryArtist) {
+  // Pass 1: Query by track_name & artist_name (only if not rate-limited and not aborted)
+  if (!isRateLimited && cleanTitle && primaryArtist && !signal?.aborted) {
     onStatusChange?.(`Searching LRCLIB for ${primaryArtist} - ${cleanTitle}...`);
     try {
       const url = `${LRCLIB_BASE}/search?track_name=${encodeURIComponent(cleanTitle)}&artist_name=${encodeURIComponent(primaryArtist)}`;
-      const res = await fetch(url);
-      if (res.ok) {
+      const res = await fetch(url, { signal });
+      if (res.status === 429) {
+        isRateLimited = true;
+      } else if (res.ok) {
         const data = (await res.json()) as LRCLibRecord[];
         if (Array.isArray(data)) addCandidates(data);
       }
-    } catch (err) {
-      console.warn('LRCLIB Pass 1 failed:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.warn('LRCLIB Pass 1 failed:', err);
     }
   }
 
   // Pass 2: If Pass 1 returns no synced results, query q=cleanTitle primaryArtist
-  if (!hasSyncedResult() && (cleanTitle || primaryArtist)) {
+  if (!isRateLimited && !hasSyncedResult() && (cleanTitle || primaryArtist) && !signal?.aborted) {
     const q2 = `${cleanTitle} ${primaryArtist}`.trim();
     onStatusChange?.(`Searching LRCLIB for "${q2}"...`);
     try {
       const url = `${LRCLIB_BASE}/search?q=${encodeURIComponent(q2)}`;
-      const res = await fetch(url);
-      if (res.ok) {
+      const res = await fetch(url, { signal });
+      if (res.status === 429) {
+        isRateLimited = true;
+      } else if (res.ok) {
         const data = (await res.json()) as LRCLibRecord[];
         if (Array.isArray(data)) addCandidates(data);
       }
-    } catch (err) {
-      console.warn('LRCLIB Pass 2 failed:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.warn('LRCLIB Pass 2 failed:', err);
     }
   }
 
   // Pass 3: If still empty, query q=cleanTitle
-  if (!hasSyncedResult() && cleanTitle) {
+  if (!isRateLimited && !hasSyncedResult() && cleanTitle && !signal?.aborted) {
     onStatusChange?.(`Searching title: "${cleanTitle}"...`);
     try {
       const url = `${LRCLIB_BASE}/search?q=${encodeURIComponent(cleanTitle)}`;
-      const res = await fetch(url);
-      if (res.ok) {
+      const res = await fetch(url, { signal });
+      if (res.status === 429) {
+        isRateLimited = true;
+      } else if (res.ok) {
         const data = (await res.json()) as LRCLibRecord[];
         if (Array.isArray(data)) addCandidates(data);
       }
-    } catch (err) {
-      console.warn('LRCLIB Pass 3 failed:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.warn('LRCLIB Pass 3 failed:', err);
     }
   }
 
   // Pass 3.5: Compound title split (if slash in title)
-  if (!hasSyncedResult() && cleanTitle.includes('/')) {
+  if (!isRateLimited && !hasSyncedResult() && cleanTitle.includes('/') && !signal?.aborted) {
     const firstPart = cleanMetadata(cleanTitle.split('/')[0]).cleanTitle;
     if (firstPart) {
       try {
-        const res = await fetch(`${LRCLIB_BASE}/search?track_name=${encodeURIComponent(firstPart)}&artist_name=${encodeURIComponent(primaryArtist)}`);
+        const res = await fetch(`${LRCLIB_BASE}/search?track_name=${encodeURIComponent(firstPart)}&artist_name=${encodeURIComponent(primaryArtist)}`, { signal });
         if (res.ok) {
           const data = (await res.json()) as LRCLibRecord[];
           if (Array.isArray(data)) addCandidates(data);
@@ -766,6 +827,9 @@ export async function autoFetchLyrics(
   if (primaryArtist && cleanTitle) {
     setCachedLyrics(primaryArtist, cleanTitle, bestMatch);
   }
+  if (metadata.songId) {
+    setCachedLyricsByTrackId(metadata.songId, bestMatch);
+  }
 
   const statusLabel = isFallback
     ? `Plain Lyrics Auto-Timed (${bestMatch.artistName} - ${bestMatch.trackName})`
@@ -775,6 +839,9 @@ export async function autoFetchLyrics(
   const parsedTrack = convertLRCLibToLyricTrack(bestMatch, safeAudioDuration);
   setCachedLyricTrack(rawTitle, parsedTrack);
   setCachedLyricTrack(cleanTitle, parsedTrack);
+  if (metadata.songId) {
+    setCachedLyricTrack(metadata.songId, parsedTrack);
+  }
 
   return {
     track: parsedTrack,

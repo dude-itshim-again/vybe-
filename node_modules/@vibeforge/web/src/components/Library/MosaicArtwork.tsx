@@ -76,6 +76,7 @@ export const MosaicArtwork: React.FC<MosaicArtworkProps> = ({
             alt="Album Mosaic"
             className="w-full h-full object-cover"
             loading="lazy"
+            decoding="async"
           />
         ))}
       </div>
@@ -94,6 +95,7 @@ export const MosaicArtwork: React.FC<MosaicArtworkProps> = ({
           alt="Album Art"
           className="w-full h-full object-cover"
           loading="lazy"
+          decoding="async"
         />
       </div>
     );

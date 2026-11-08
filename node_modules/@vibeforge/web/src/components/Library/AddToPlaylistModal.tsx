@@ -15,12 +15,14 @@ interface AddToPlaylistModalProps {
   isOpen: boolean;
   onClose: () => void;
   track: EchoTrack | TrackMetadata | null;
+  onShowToast?: (text: string, icon?: React.ReactNode) => void;
 }
 
 export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({
   isOpen,
   onClose,
   track,
+  onShowToast,
 }) => {
   const [newPlaylistName, setNewPlaylistName] = useState<string>('');
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
@@ -36,19 +38,22 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({
     const newPl = userLibrary.createPlaylist(newPlaylistName.trim());
     userLibrary.addTrackToPlaylist(newPl.id, track);
     setJustAddedId(newPl.id);
+    onShowToast?.(`Added to '${newPl.name}'`, <Check className="w-3.5 h-3.5 text-emerald-400" />);
     setNewPlaylistName('');
     setTimeout(() => {
       onClose();
-    }, 900);
+    }, 600);
   };
 
   const handleTogglePlaylist = (playlist: VybePlaylist) => {
     const alreadyIn = playlist.tracks.some((t) => t.id === track.id);
     if (alreadyIn) {
       userLibrary.removeTrackFromPlaylist(playlist.id, track.id);
+      onShowToast?.(`Removed from '${playlist.name}'`);
     } else {
       userLibrary.addTrackToPlaylist(playlist.id, track);
       setJustAddedId(playlist.id);
+      onShowToast?.(`Added to '${playlist.name}'`, <Check className="w-3.5 h-3.5 text-emerald-400" />);
       setTimeout(() => setJustAddedId(null), 1800);
     }
   };

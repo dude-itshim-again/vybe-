@@ -31,6 +31,7 @@ export interface EchoTrack {
   artwork?: string;
   audioUrl?: string;
   url?: string;
+  localFilePath?: string;
 }
 
 export const DEFAULT_ARTWORK_FALLBACK = './logo.png';
@@ -88,6 +89,55 @@ export function isArtistMatch(artistA?: string, artistB?: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Extracts normalized primary artist name before features, ampersands, or commas.
+ */
+export function extractPrimaryArtist(artist?: string): string {
+  if (!artist) return '';
+  return artist
+    .split(/[,&/-]|\bfeat\.?\b|\bft\.?\b/i)[0]
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .trim();
+}
+
+/**
+ * Strict JioSaavn Matcher:
+ * Rejects candidate unless BOTH normalized track title matches AND candidate's artist string
+ * contains the primary artist name, AND duration is within ±12 seconds of official catalog track.
+ */
+export function isStrictSaavnMatch(
+  official: { title: string; artist: string; duration?: number },
+  saavn: { title: string; artist: string; duration?: number }
+): boolean {
+  if (!official.title || !saavn.title) return false;
+
+  // 1. Normalized track title match
+  const normOfficialTitle = normalizeSongString(official.title);
+  const normSaavnTitle = normalizeSongString(saavn.title);
+  if (!normOfficialTitle || !normSaavnTitle) return false;
+  const titleMatches =
+    normOfficialTitle === normSaavnTitle ||
+    normOfficialTitle.includes(normSaavnTitle) ||
+    normSaavnTitle.includes(normOfficialTitle);
+  if (!titleMatches) return false;
+
+  // 2. Candidate artist string MUST contain the primary artist name
+  const primaryArtist = extractPrimaryArtist(official.artist);
+  const saavnArtistNorm = (saavn.artist || '').toLowerCase().replace(/[^\w\s]/g, '');
+  if (primaryArtist && !saavnArtistNorm.includes(primaryArtist)) {
+    return false;
+  }
+
+  // 3. Duration within ±12 seconds if catalog track duration is available
+  if (official.duration && official.duration > 10 && saavn.duration && saavn.duration > 10) {
+    const diff = Math.abs(official.duration - saavn.duration);
+    if (diff > 12) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -459,67 +509,117 @@ async function searchMirror(mirrorUrl: string, query: string, limit = 20): Promi
 }
 
 /**
- * Universal Catalog Search Pipeline:
- * 1. Parallel Official Search (iTunes Official Catalog + Direct JioSaavn API)
- * 2. Strict Title & Artist Verification to attach JioSaavn 320kbps streams to official songs
- * 3. Fallback to active mirrors and client-side DES decryption
+ * YouTube Music Fallback Search (via Electron IPC or local dev server)
+ */
+export async function searchYouTubeFallback(query: string, limit = 10): Promise<EchoTrack[]> {
+  const cleanQ = query.trim();
+  if (!cleanQ) return [];
+
+  // 1. Electron IPC search
+  if (typeof window !== 'undefined' && window.electron?.searchYt) {
+    try {
+      const results = await window.electron.searchYt(cleanQ, limit);
+      if (Array.isArray(results) && results.length > 0) {
+        return results as EchoTrack[];
+      }
+    } catch (e) {
+      console.warn('[streamResolver] Electron searchYt error:', e);
+    }
+  }
+
+  // 2. Local Vite proxy /api/search-yt
+  try {
+    const res = await fetch(`/api/search-yt?q=${encodeURIComponent(cleanQ)}&limit=${limit}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.tracks) && data.tracks.length > 0) {
+        return data.tracks as EchoTrack[];
+      }
+    }
+  } catch {}
+
+  return [];
+}
+
+/**
+ * Universal Multi-Source Catalog Search Pipeline:
+ * Searches 3 sources in parallel and deduplicates cleanly:
+ * 1. iTunes Official Catalog (global/Western studio metadata & artwork)
+ * 2. JioSaavn Direct API (Bollywood, Hindi, Marathi, Punjabi & Indian regional)
+ * 3. YouTube Music / yt-search Fallback (unreleased tracks, remixes, anime OST, lofi flips)
  */
 export async function fetchCatalogSearch(query: string, limit = 25): Promise<EchoTrack[]> {
   const cleanQ = query.trim();
   if (!cleanQ) return [];
 
-  // Parallel fetch: iTunes official metadata + direct JioSaavn results
-  const [itunesRes, saavnRes] = await Promise.allSettled([
+  const isKaraokeQuery = /\bkaraoke\b/i.test(cleanQ);
+
+  // Parallel fetch: 3 sources simultaneously
+  const [itunesRes, saavnRes, ytRes] = await Promise.allSettled([
     fetchITunesCatalogSearch(cleanQ, limit),
     searchSaavnDirect(cleanQ, limit + 5),
+    searchYouTubeFallback(cleanQ, Math.min(12, limit)),
   ]);
 
-  const itunesTracks = itunesRes.status === 'fulfilled' ? itunesRes.value : [];
-  const saavnTracks = saavnRes.status === 'fulfilled' ? saavnRes.value : [];
+  let itunesTracks = itunesRes.status === 'fulfilled' ? itunesRes.value : [];
+  let saavnTracks = saavnRes.status === 'fulfilled' ? saavnRes.value : [];
+  let ytTracks = ytRes.status === 'fulfilled' ? ytRes.value : [];
 
-  if (itunesTracks.length > 0) {
-    const finalTracks: EchoTrack[] = [];
-    const matchedSaavnIds = new Set<string>();
+  // Apply anti-karaoke filter unless user explicitly requested karaoke
+  if (!isKaraokeQuery) {
+    itunesTracks = itunesTracks.filter((t) => !isKaraokeOrBootleg(t.title, t.artist, t.album));
+    saavnTracks = saavnTracks.filter((t) => !isKaraokeOrBootleg(t.title, t.artist, t.album));
+    ytTracks = ytTracks.filter((t) => !isKaraokeOrBootleg(t.title, t.artist, t.album));
+  }
 
-    for (const official of itunesTracks) {
-      // Direct JioSaavn Stream Matcher with STRICT Artist + Title Verification
-      const matched = saavnTracks.find((s) => {
-        if (!s.streamUrl) return false;
-        return isTitleMatch(official.title, s.title) && isArtistMatch(official.artist, s.artist);
-      });
+  const finalTracks: EchoTrack[] = [];
+  const matchedSaavnIds = new Set<string>();
 
-      if (matched && matched.streamUrl) {
-        official.streamUrl = matched.streamUrl;
-        official.audioUrl = matched.streamUrl;
-        official.url = matched.streamUrl;
-        official.source = 'saavn';
-        official.quality = '320kbps';
-        matchedSaavnIds.add(matched.id);
-      }
+  // 1. Process official iTunes tracks and attach direct JioSaavn 320kbps audio stream where available
+  for (const official of itunesTracks) {
+    const matched = saavnTracks.find((s) => {
+      if (!s.streamUrl) return false;
+      return isStrictSaavnMatch(official, s);
+    });
 
-      finalTracks.push(official);
+    if (matched && matched.streamUrl) {
+      official.streamUrl = matched.streamUrl;
+      official.audioUrl = matched.streamUrl;
+      official.url = matched.streamUrl;
+      official.source = 'saavn';
+      official.quality = '320kbps';
+      matchedSaavnIds.add(matched.id);
     }
 
-    // Append genuine Indian / regional releases found on JioSaavn that weren't in iTunes
-    for (const sTrack of saavnTracks) {
-      if (matchedSaavnIds.has(sTrack.id)) continue;
-      const alreadyPresent = finalTracks.some(
-        (f) => isTitleMatch(f.title, sTrack.title) && isArtistMatch(f.artist, sTrack.artist)
-      );
-      if (!alreadyPresent && sTrack.streamUrl) {
-        finalTracks.push(sTrack);
-      }
-    }
+    finalTracks.push(official);
+  }
 
+  // 2. Append genuine Indian / regional releases found on JioSaavn not in iTunes
+  for (const sTrack of saavnTracks) {
+    if (matchedSaavnIds.has(sTrack.id)) continue;
+    const alreadyPresent = finalTracks.some(
+      (f) => isTitleMatch(f.title, sTrack.title) && isArtistMatch(f.artist, sTrack.artist)
+    );
+    if (!alreadyPresent) {
+      finalTracks.push(sTrack);
+    }
+  }
+
+  // 3. Append YouTube tracks (unreleased songs, remixes, anime OST, lofi flips) not present in iTunes or Saavn
+  for (const yTrack of ytTracks) {
+    const alreadyPresent = finalTracks.some(
+      (f) => isTitleMatch(f.title, yTrack.title) && isArtistMatch(f.artist, yTrack.artist)
+    );
+    if (!alreadyPresent) {
+      finalTracks.push(yTrack);
+    }
+  }
+
+  if (finalTracks.length > 0) {
     return finalTracks.slice(0, limit);
   }
 
-  // Fallback if iTunes is unavailable: use verified JioSaavn results
-  if (saavnTracks.length > 0) {
-    return saavnTracks.slice(0, limit);
-  }
-
-  // Fallback to active CORS mirrors
+  // 4. Fallback to active CORS mirrors if all 3 direct sources returned empty
   const prioritizedMirrors = [
     fastestMirror,
     ...JIOSAAVN_MIRRORS.filter((m) => m !== fastestMirror),
@@ -528,7 +628,9 @@ export async function fetchCatalogSearch(query: string, limit = 25): Promise<Ech
   for (const mirror of prioritizedMirrors) {
     const results = await searchMirror(mirror, cleanQ, limit);
     if (results.length > 0) {
-      return results;
+      return isKaraokeQuery
+        ? results
+        : results.filter((t) => !isKaraokeOrBootleg(t.title, t.artist, t.album));
     }
   }
 
@@ -671,8 +773,16 @@ export async function resolveFullTrackAudio(track: TrackMetadata | EchoTrack): P
       );
       if (!searchRes.ok) continue;
       const searchData = await searchRes.json();
-      const firstItem = searchData?.items?.[0];
-      const videoId = firstItem?.url ? firstItem.url.replace('/watch?v=', '') : null;
+      const items = Array.isArray(searchData?.items) ? searchData.items : [];
+      const primaryArtist = extractPrimaryArtist(artist);
+      const normTitle = normalizeSongString(title);
+      const matchedItem = items.find((item: any) => {
+        const itemTitle = normalizeSongString(item.title || '');
+        const itemUploader = normalizeSongString(item.uploaderName || '');
+        return (itemTitle.includes(primaryArtist) || itemUploader.includes(primaryArtist)) &&
+               itemTitle.includes(normTitle);
+      }) || items[0];
+      const videoId = matchedItem?.url ? matchedItem.url.replace('/watch?v=', '') : null;
 
       if (videoId) {
         const streamRes = await fetch(`${inst}/streams/${videoId}`, {

@@ -29,6 +29,7 @@ export interface TrackMetadata {
   audioUrl?: string;
   url?: string;
   previewUrl?: string;
+  localFilePath?: string;
 }
 
 export interface MusicProvider {

@@ -72,19 +72,24 @@ export const DualVideoStage: React.FC<DualVideoStageProps> = ({
 
   // Audio-reactive video playbackRate modulation (0.85x to 1.25x tracking --bass-energy)
   useEffect(() => {
-    let animId: number;
+    let animId: number | null = null;
     let lastTime = 0;
 
+    if (!isPlaying) return;
+
     const rateModulationLoop = (time: number) => {
-      if (time - lastTime >= 100) {
-        // Sample every 100ms
+      // In low-spec mode, keep video playback fixed at 1.0x without rAF polling
+      if (document.documentElement.classList.contains('perf-mode-low')) {
+        return;
+      }
+
+      if (time - lastTime >= 150) {
         lastTime = time;
         const rawBass = parseFloat(
           getComputedStyle(document.documentElement).getPropertyValue('--bass-energy') || '0'
         );
 
         if (!isNaN(rawBass)) {
-          // Target rate: 1.0 + (bass - 0.4) * 0.35, clamped between 0.85 and 1.25
           const targetRate = Math.max(0.85, Math.min(1.25, 1.0 + (rawBass - 0.4) * 0.35));
           const activeEl = activeSlot === 'A' ? videoARef.current : videoBRef.current;
           if (activeEl && !activeEl.paused) {
@@ -96,8 +101,10 @@ export const DualVideoStage: React.FC<DualVideoStageProps> = ({
     };
 
     animId = requestAnimationFrame(rateModulationLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [activeSlot]);
+    return () => {
+      if (animId !== null) cancelAnimationFrame(animId);
+    };
+  }, [activeSlot, isPlaying]);
 
   return (
     <div className="relative w-full h-full rounded-3xl overflow-hidden bg-[#070709] border border-white/5 shadow-2xl">

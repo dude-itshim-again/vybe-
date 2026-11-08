@@ -7,6 +7,7 @@ import {
   Download,
   Trash2,
   HardDriveDownload,
+  FolderSearch,
 } from 'lucide-react';
 import { EchoTrack } from '../../services/streamResolver';
 import { TrackMetadata } from '../../providers/types';
@@ -233,6 +234,23 @@ export const TrackActionButtons: React.FC<TrackActionButtonsProps> = ({
               <HardDriveDownload className="w-3.5 h-3.5 text-cyan-400" />
               <span>Export to Disk (.m4a)</span>
             </button>
+
+            {typeof window !== 'undefined' &&
+              window.electron?.showItemInFolder &&
+              (track.localFilePath || (track as any).localFilePath) && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowDownloadMenu(false);
+                    const p = track.localFilePath || (track as any).localFilePath;
+                    if (p) window.electron?.showItemInFolder?.(p);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-cyan-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors text-left cursor-pointer"
+                >
+                  <FolderSearch className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Show in Folder</span>
+                </button>
+              )}
 
             <button
               onClick={handleRemoveDownload}

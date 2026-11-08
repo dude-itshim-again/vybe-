@@ -1,0 +1,38 @@
+name: mobile
+description: "Vybe Music - Native Flutter Mobile App"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  just_audio: ^0.9.46
+  audio_session: ^0.1.25
+  youtube_explode_dart: ^2.4.0
+  dio: ^5.8.0+1
+  http: ^1.2.2
+  supabase_flutter: ^2.8.4
+  shared_preferences: ^2.5.2
+  path_provider: ^2.1.5
+  cached_network_image: ^3.4.1
+  video_player: ^2.9.3
+  google_fonts: ^6.2.1
+  dart_des: ^1.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo.png
+    - assets/vybe-intro.mp4

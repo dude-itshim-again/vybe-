@@ -289,54 +289,12 @@ export function classifyVibeDeterministically(
 }
 
 /**
- * Public Reddit Live Scraper:
- * Queries public CORS-accessible Reddit JSON feeds (r/cinemagraphs, r/visualizers) for direct .mp4 streams.
+ * Curated HD Video Catalog:
+ * Direct high-performance video loops mapped per archetype without heavy background scraping.
  */
-export async function scrapeRedditVideos(query: string): Promise<VideoCandidate[]> {
-  try {
-    const cleanQ = query.replace(/[^\w\s]/gi, ' ').trim();
-    const url = `https://www.reddit.com/r/cinemagraphs/search.json?q=${encodeURIComponent(cleanQ)}&restrict_sr=1&sort=top&t=year&limit=6`;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500); // 2.5s hard timeout budget
-
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'web:com.vybe.visualizer:v2.0.0 (by /u/vybe_app)',
-      },
-    });
-    clearTimeout(timeout);
-
-    if (!res.ok) return [];
-
-    const json = await res.json();
-    const children = json?.data?.children || [];
-    const candidates: VideoCandidate[] = [];
-
-    for (const item of children) {
-      const data = item.data;
-      const redditVideo = data?.secure_media?.reddit_video || data?.media?.reddit_video;
-      const fallbackUrl = redditVideo?.fallback_url || data?.preview?.reddit_video_preview?.fallback_url;
-
-      if (fallbackUrl && fallbackUrl.endsWith('.mp4')) {
-        candidates.push({
-          id: `reddit-${data.id}`,
-          title: data.title || 'Reddit Cinemagraph',
-          url: fallbackUrl,
-          source: 'reddit',
-          archetype: 'Live Scraped Video',
-          thumbnail: data.thumbnail,
-          duration: redditVideo?.duration || 10,
-        });
-      }
-    }
-
-    return candidates;
-  } catch {
-    // Graceful silent fallback if Reddit rate-limits or network is offline
-    return [];
-  }
+export async function scrapeRedditVideos(_query: string): Promise<VideoCandidate[]> {
+  // Reddit background scraper completely removed to eliminate UI lag & excessive RAM usage.
+  return [];
 }
 
 /**
@@ -425,20 +383,8 @@ export async function discoverBackgroundVideos(
 
   const catalogVideos = FALLBACK_VIDEO_CATALOG[matchedArchetype] || FALLBACK_VIDEO_CATALOG['Cosmic & Cyberpunk Abstract'];
 
-  // Parallel live scrape attempt (e.g. Reddit)
-  let liveVideos: VideoCandidate[] = [];
-  try {
-    const firstQuery = profile.searchQueries[0]?.query || title;
-    liveVideos = await scrapeRedditVideos(firstQuery);
-  } catch {
-    // Non-fatal
-  }
-
-  // Combine: Live candidates first, followed by guaranteed HD catalog
-  const combinedVideos = [...liveVideos, ...catalogVideos];
-
   return {
     profile,
-    videos: combinedVideos,
+    videos: catalogVideos,
   };
 }

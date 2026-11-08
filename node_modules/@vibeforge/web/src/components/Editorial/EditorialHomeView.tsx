@@ -257,33 +257,8 @@ export const EditorialHomeView: React.FC<EditorialHomeViewProps> = ({
       return;
     }
 
-    // If it already has a direct streamUrl, play immediately!
-    if (track.streamUrl && !track.streamUrl.startsWith('blob:') && track.sourceType === 'stream') {
-      onPlayTrack(track);
-      return;
-    }
-
-    // Resolve real 320kbps song via catalog search
-    const trackKey = track.id || track.title;
-    setLoadingRowId(trackKey);
-    try {
-      const q = track.searchQuery || `${track.title} ${track.artist}`;
-      const results = await fetchCatalogSearch(q, 1);
-      if (results && results.length > 0) {
-        onPlayTrack({
-          ...track,
-          ...results[0],
-          streamUrl: resolveStreamUrl(results[0].streamUrl),
-        });
-      } else {
-        onPlayTrack(track);
-      }
-    } catch (err) {
-      console.warn('[EditorialHomeView] Failed to resolve rotation song:', err);
-      onPlayTrack(track);
-    } finally {
-      setLoadingRowId(null);
-    }
+    // Pass the exact track object directly (verified by unique track.id)
+    onPlayTrack(track);
   };
 
   // 4. MADE FOR YOUR MONDAY (DAILY BLEND) HANDLER
@@ -395,6 +370,8 @@ export const EditorialHomeView: React.FC<EditorialHomeViewProps> = ({
             src={activeSlide.visualUrl}
             alt={activeSlide.title}
             className="w-full h-full object-cover transition-opacity duration-700 select-none pointer-events-none"
+            loading="lazy"
+            decoding="async"
           />
           {/* Smooth left-edge gradient mask into dark smoked glass */}
           <div className="absolute inset-0 bg-gradient-to-r from-[#0e1018]/90 via-transparent to-black/25 pointer-events-none" />
@@ -463,6 +440,7 @@ export const EditorialHomeView: React.FC<EditorialHomeViewProps> = ({
                     alt={card.title}
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                     loading="lazy"
+                    decoding="async"
                   />
                   <div
                     className={`absolute inset-0 transition-colors ${
@@ -588,6 +566,8 @@ export const EditorialHomeView: React.FC<EditorialHomeViewProps> = ({
                           src={track.artworkUrl}
                           alt={track.title}
                           className="w-full h-full object-cover"
+                          loading="lazy"
+                          decoding="async"
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center bg-white/10">
@@ -679,6 +659,8 @@ export const EditorialHomeView: React.FC<EditorialHomeViewProps> = ({
                 src="https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=400&q=80"
                 alt="Your Daily Blend"
                 className="w-full h-full object-cover"
+                loading="lazy"
+                decoding="async"
               />
               <div className="absolute inset-0 bg-black/15" />
             </div>

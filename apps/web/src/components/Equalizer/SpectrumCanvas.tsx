@@ -30,7 +30,10 @@ export const SpectrumCanvas: React.FC<SpectrumCanvasProps> = ({ engine, isPlayin
       frequencies[i] = 20 * Math.pow(20000 / 20, i / (numPoints - 1));
     }
 
+    let decayFrames = 0;
+
     const render = () => {
+      const isLowSpec = document.documentElement.classList.contains('perf-mode-low');
       const dpr = window.devicePixelRatio || 1;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
@@ -51,13 +54,14 @@ export const SpectrumCanvas: React.FC<SpectrumCanvasProps> = ({ engine, isPlayin
       drawGrid(ctx, width, height);
 
       if (engine) {
-        // Read live FFT data if audio is active
-        if (isPlayingRef.current) {
+        // Read live FFT data if audio is active and not low spec mode
+        if (isPlayingRef.current && !isLowSpec) {
           engine.getFrequencyData(binBuffer);
-        } else {
-          // Decay buffer
+          decayFrames = 30;
+        } else if (decayFrames > 0) {
+          decayFrames--;
           for (let i = 0; i < binBuffer.length; i++) {
-            binBuffer[i] = Math.max(0, binBuffer[i] * 0.92);
+            binBuffer[i] = Math.max(0, binBuffer[i] * 0.9);
           }
         }
 
@@ -70,15 +74,30 @@ export const SpectrumCanvas: React.FC<SpectrumCanvasProps> = ({ engine, isPlayin
       }
 
       ctx.restore();
-      animationFrameId = requestAnimationFrame(render);
+
+      // Only schedule next frame if audio is actively playing or decaying, and window is visible
+      if ((isPlayingRef.current || decayFrames > 0) && !document.hidden) {
+        animationFrameId = requestAnimationFrame(render);
+      }
     };
+
+    const handleVisChange = () => {
+      if (!document.hidden && isPlayingRef.current) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = requestAnimationFrame(render);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisChange);
 
     animationFrameId = requestAnimationFrame(render);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      document.removeEventListener('visibilitychange', handleVisChange);
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
-  }, [engine]);
+  }, [engine, isPlaying]);
 
   return (
     <div className="glass-panel rounded-2xl p-5 sm:p-6 relative overflow-visible shrink-0 h-auto">

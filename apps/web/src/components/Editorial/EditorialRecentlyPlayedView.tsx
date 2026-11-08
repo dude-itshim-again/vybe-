@@ -112,6 +112,8 @@ export const EditorialRecentlyPlayedView: React.FC<EditorialRecentlyPlayedViewPr
                     <img
                       src={track.artworkUrl || track.coverUrl || track.image}
                       alt={track.title}
+                      loading="lazy"
+                      decoding="async"
                       onError={(e) => {
                         const target = e.currentTarget as HTMLImageElement;
                         if (!target.src.endsWith('logo.png')) {

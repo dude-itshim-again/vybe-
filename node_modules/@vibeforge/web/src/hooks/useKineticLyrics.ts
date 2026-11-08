@@ -95,11 +95,11 @@ export function useKineticLyrics({
     }
   }, [track?.trackId, track?.offsetMs]);
 
-  // Strict 60fps requestAnimationFrame loop
+  // Strict requestAnimationFrame loop (active only during playback)
   // Adheres strictly to .antigravity/rules.md:
   // ZERO React re-renders during active line playback; mutates CSS custom properties directly.
   useEffect(() => {
-    let animId: number;
+    let animId: number | null = null;
 
     const tick = () => {
       const currentLines = linesRef.current;
@@ -116,8 +116,6 @@ export function useKineticLyrics({
           setActiveLineIndex(nextLineIdx);
 
           // Clean up words in previous lines:
-          // If moving forward, set previous line's words to 1.0 (completed)
-          // If seeking backward, set subsequent line's words to 0.0
           const prevLine = currentLines[prevIdx];
           if (prevLine) {
             const isForward = nextLineIdx > prevIdx;
@@ -131,7 +129,7 @@ export function useKineticLyrics({
           }
         }
 
-        // 60fps Direct DOM CSS Custom Property Injection for the Active Line
+        // Direct DOM CSS Custom Property Injection for the Active Line
         const activeLine = currentLines[activeLineIndexRef.current];
         if (activeLine && activeLine.words.length > 0) {
           let currentActiveWordFound = false;
@@ -142,15 +140,12 @@ export function useKineticLyrics({
             if (!node) continue;
 
             if (calibratedTime < word.startTime) {
-              // Word is upcoming
               node.style.setProperty('--word-progress', '0');
               node.classList.remove('is-active');
             } else if (calibratedTime >= word.endTime) {
-              // Word is already completed
               node.style.setProperty('--word-progress', '1');
               node.classList.remove('is-active');
             } else {
-              // Word is CURRENTLY being sung
               const wordDuration = Math.max(0.001, word.endTime - word.startTime);
               const rawProgress = (calibratedTime - word.startTime) / wordDuration;
               const clampedProgress = Math.max(0, Math.min(1, rawProgress));
@@ -169,11 +164,45 @@ export function useKineticLyrics({
         }
       }
 
-      animId = requestAnimationFrame(tick);
+      if (audioElement && !audioElement.paused) {
+        animId = requestAnimationFrame(tick);
+      }
     };
 
-    animId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animId);
+    const startTick = () => {
+      if (animId === null) {
+        animId = requestAnimationFrame(tick);
+      }
+    };
+
+    const stopTick = () => {
+      if (animId !== null) {
+        cancelAnimationFrame(animId);
+        animId = null;
+      }
+      tick(); // run one tick on pause to sync line
+    };
+
+    if (audioElement) {
+      audioElement.addEventListener('play', startTick);
+      audioElement.addEventListener('pause', stopTick);
+      audioElement.addEventListener('seeked', tick);
+
+      if (!audioElement.paused) {
+        startTick();
+      } else {
+        tick();
+      }
+    }
+
+    return () => {
+      if (animId !== null) cancelAnimationFrame(animId);
+      if (audioElement) {
+        audioElement.removeEventListener('play', startTick);
+        audioElement.removeEventListener('pause', stopTick);
+        audioElement.removeEventListener('seeked', tick);
+      }
+    };
   }, [audioElement]);
 
   return {

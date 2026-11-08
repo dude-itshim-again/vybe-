@@ -70,6 +70,39 @@ export function parseTimestampToSeconds(ts: string): number {
 }
 
 /**
+ * Sanitizes lyrics text to preserve valid opening parentheses while removing
+ * stray or broken trailing closing parentheses (e.g. "cardigan)" -> "(cardigan)" or "cardigan").
+ */
+export function cleanUnmatchedParentheses(text: string): string {
+  if (!text) return '';
+  let str = text.trim();
+
+  const openCount = (str.match(/\(/g) || []).length;
+  const closeCount = (str.match(/\)/g) || []).length;
+
+  if (closeCount > openCount) {
+    if (openCount === 0) {
+      // If there are no opening parens at all, strip stray closing parens like "cardigan)" -> "cardigan"
+      str = str.replace(/\)+/g, '');
+    } else {
+      let diff = closeCount - openCount;
+      while (diff > 0 && str.endsWith(')')) {
+        str = str.slice(0, -1).trim();
+        diff--;
+      }
+    }
+  } else if (openCount > closeCount) {
+    let diff = openCount - closeCount;
+    while (diff > 0 && str.startsWith('(')) {
+      str = str.slice(1).trim();
+      diff--;
+    }
+  }
+
+  return str.trim();
+}
+
+/**
  * Enhanced Word Parser: extracts <mm:ss.xx> word-level tags if present.
  * Example: "<00:12.30> Hello <00:12.80> beautiful <00:13.40> world"
  */
@@ -88,13 +121,21 @@ function parseEnhancedWords(
     tag: m[0],
   }));
 
+  // Preserve any leading prefix before the first timestamp tag (e.g., '(' in "(<00:12.30>cardigan<00:13.00>)")
+  const leadingPrefix = rawText.slice(0, matches[0].index).trim();
+
   const words: LyricWord[] = [];
   for (let i = 0; i < matches.length; i++) {
     const cur = matches[i];
     const textStart = cur.index + cur.tag.length;
     const textEnd = i + 1 < matches.length ? matches[i + 1].index : rawText.length;
-    const wordText = rawText.slice(textStart, textEnd).trim();
+    let wordText = rawText.slice(textStart, textEnd).trim();
 
+    if (i === 0 && leadingPrefix) {
+      wordText = `${leadingPrefix}${wordText}`;
+    }
+
+    wordText = cleanUnmatchedParentheses(wordText);
     if (!wordText) continue;
 
     const startTime = cur.time;
@@ -128,14 +169,14 @@ export function interpolateWordsForLine(
   lineId: string
 ): LyricWord[] {
   // Clean out any metadata or residual brackets
-  const cleanText = text.replace(/<[^>]+>/g, '').trim();
+  const cleanText = cleanUnmatchedParentheses(text.replace(/<[^>]+>/g, '').trim());
   if (!cleanText) return [];
 
   // Split into words while preserving punctuation attached to words
   const splitWords = cleanText.split(/\s+/).filter(Boolean);
   if (splitWords.length === 0) return [];
-  // Cap words per line to 25
-  const rawWords = splitWords.slice(0, 25);
+  // Cap words per line to 25 and sanitize stray parentheses
+  const rawWords = splitWords.slice(0, 25).map(cleanUnmatchedParentheses).filter(Boolean);
 
   const durationSpan = Number.isFinite(endTime - startTime) ? endTime - startTime : 2.5;
   const totalLineSpan = Math.max(0.4, durationSpan);
@@ -226,21 +267,27 @@ export function parseLrc(
       continue;
     }
 
-    // Check for timecodes safely with matchAll (ZERO while loops)
-    const matches = Array.from(trimmed.matchAll(/\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g));
-    if (matches.length > 0) {
-      const lastMatch = matches[matches.length - 1];
-      const lastIndex = (lastMatch.index ?? 0) + lastMatch[0].length;
-      const lyricText = trimmed.slice(lastIndex).trim();
+    // Ensure timestamp stripping only removes leading [mm:ss.xx] and does NOT strip opening parentheses (
+    const timestampRegex = /^\s*\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]\s*/;
+    let remaining = trimmed;
+    const lineTimestamps: string[] = [];
+    let tsMatch: RegExpExecArray | null;
+    while ((tsMatch = timestampRegex.exec(remaining)) !== null) {
+      lineTimestamps.push(tsMatch[0]);
+      remaining = remaining.slice(tsMatch[0].length);
+    }
+
+    if (lineTimestamps.length > 0) {
+      const lyricText = remaining.trim();
 
       if (/<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>/.test(lyricText)) {
         hasEnhancedTags = true;
       }
 
       // Handle lines with multiple timestamps (e.g. [00:10.00][00:20.00] Chorus)
-      for (const m of matches) {
+      for (const ts of lineTimestamps) {
         rawEntries.push({
-          startTime: parseTimestampToSeconds(m[0]),
+          startTime: parseTimestampToSeconds(ts),
           rawText: lyricText,
         });
       }
@@ -280,7 +327,7 @@ export function parseLrc(
       endTime = safeDuration > entry.startTime + 1.0 ? safeDuration : entry.startTime + 4.5;
     }
 
-    const cleanDisplayText = entry.rawText.replace(/<[^>]+>/g, '').trim();
+    const cleanDisplayText = cleanUnmatchedParentheses(entry.rawText.replace(/<[^>]+>/g, '').trim());
     const lineId = `line-${i}-${Math.round(entry.startTime * 100)}`;
 
     // Try enhanced word parsing first
@@ -347,7 +394,7 @@ export function parsePlainLyrics(
 
   const rawLines = plainText
     .split(/\r?\n/)
-    .map(l => l.trim())
+    .map(l => cleanUnmatchedParentheses(l.trim()))
     .filter(Boolean)
     .slice(0, 250);
 

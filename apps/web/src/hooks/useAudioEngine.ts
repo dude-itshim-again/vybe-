@@ -49,6 +49,17 @@ export function getSavedLastPlayedTrack(): TrackMetadata {
 }
 
 /**
+ * In-memory stream cache strictly keyed by normalized title__artist
+ */
+const streamUrlCache = new Map<string, string>();
+
+function getStreamCacheKey(track: TrackMetadata): string {
+  const title = (track.title || '').toLowerCase().trim();
+  const artist = (track.artist || '').toLowerCase().trim();
+  return `${title}__${artist}`;
+}
+
+/**
  * 3-Tier Seamless Audio Routing:
  * 1. Checks if track is saved in IndexedDB offlineVault (returns 0ms local blob: URL)
  * 2. Tier 1: Verified Direct JioSaavn 320kbps stream (only if title & artist match)
@@ -56,6 +67,14 @@ export function getSavedLastPlayedTrack(): TrackMetadata {
  * 4. Tier 3: Public Piped & official iTunes studio audio preview fallback
  */
 async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
+  // 0. Direct Local Disk Playback (Offline real downloads, 0ms latency, zero internet)
+  if (track.localFilePath) {
+    const formatted = track.localFilePath.startsWith('file://')
+      ? track.localFilePath
+      : `file:///${track.localFilePath.replace(/\\/g, '/')}`;
+    return formatted;
+  }
+
   try {
     const offlineUrl = await offlineVault.getOfflinePlayableUrl(track.id);
     if (offlineUrl) return offlineUrl;
@@ -63,9 +82,19 @@ async function resolvePlayableUrl(track: TrackMetadata): Promise<string> {
     console.warn('[useAudioEngine] Offline vault check fallback:', e);
   }
 
+  // 1. Check verified in-memory stream cache strictly keyed by title__artist
+  const cacheKey = getStreamCacheKey(track);
+  if (cacheKey && streamUrlCache.has(cacheKey)) {
+    const cached = streamUrlCache.get(cacheKey)!;
+    if (cached) return cached;
+  }
+
   try {
     const stream = await resolveFullTrackAudio(track);
     if (stream) {
+      if (cacheKey) {
+        streamUrlCache.set(cacheKey, stream);
+      }
       track.streamUrl = stream;
       track.audioUrl = stream;
       track.url = stream;
@@ -121,6 +150,7 @@ export function useAudioEngine(
   ) => void
 ) {
   const engineRef = useRef<AudioDSPEngine | null>(null);
+  const currentLoadRequestIdRef = useRef<number>(0);
 
   const onTrackChangeRef = useRef(onTrackChangeCallback);
   onTrackChangeRef.current = onTrackChangeCallback;
@@ -199,44 +229,38 @@ export function useAudioEngine(
     }
   }, []);
 
-  // Pre-fetch lyrics in background for newly added tracks
-  const prefetchTrackLyrics = useCallback(async (track: QueuedTrack) => {
-    if (track.isPreFetched || track.lyricsTrack) return;
+  // Pre-resolve at most 1 next track stream when the current track is >= 80% finished
+  const isPreResolvingRef = useRef(false);
+  const preResolvedNextTrackIdRef = useRef<string | null>(null);
+
+  const preResolveNextTrack = useCallback(async () => {
+    if (isPreResolvingRef.current) return;
+    const currentState = stateRef.current;
+    const nextIdx = currentState.currentTrackIndex + 1;
+    if (nextIdx >= currentState.playlist.length) return;
+
+    const nextTrack = currentState.playlist[nextIdx];
+    if (!nextTrack || nextTrack.streamUrl || preResolvedNextTrackIdRef.current === nextTrack.id) return;
+
+    isPreResolvingRef.current = true;
+    preResolvedNextTrackIdRef.current = nextTrack.id;
 
     try {
-      const result = await autoFetchLyrics(
-        {
-          title: track.title,
-          artist: track.artist,
-          album: track.album,
-          searchQuery: track.searchQuery,
-        },
-        track.duration
-      );
-      if (result.track) {
-        setCachedLyricTrack(track.id, result.track);
-        setCachedLyricTrack(track.title, result.track);
+      const src = await resolvePlayableUrl(nextTrack);
+      if (src) {
+        nextTrack.streamUrl = src;
+        nextTrack.audioUrl = src;
+        nextTrack.url = src;
       }
-
-      setState((s) => ({
-        ...s,
-        playlist: s.playlist.map((item) =>
-          item.id === track.id
-            ? {
-                ...item,
-                lyricsTrack: result.track,
-                lyricsStatus: result.isFallbackInterpolated
-                  ? 'Interpolated Lyrics'
-                  : 'Synced Lyrics Ready',
-                isPreFetched: true,
-              }
-            : item
-        ),
-      }));
     } catch (err) {
-      console.warn('[useAudioEngine] Background lyrics pre-fetch error:', err);
+      console.warn('[useAudioEngine] Pre-resolve next track failed:', err);
+    } finally {
+      isPreResolvingRef.current = false;
     }
   }, []);
+
+  const preResolveNextTrackRef = useRef(preResolveNextTrack);
+  preResolveNextTrackRef.current = preResolveNextTrack;
 
   // Initialize engine on mount
   useEffect(() => {
@@ -283,16 +307,27 @@ export function useAudioEngine(
     const onTimeUpdate = () => {
       if (isSeekingRef.current) return;
       const now = performance.now();
-      if (now - lastTimeUpdate < 240) return; // Throttled to ~4 updates per second (250ms)
+      if (now - lastTimeUpdate < 200) return; // ~5 updates per second
       lastTimeUpdate = now;
 
       const currentAudio = engine.getActiveAudioElement();
-      mediaSessionService.updatePositionState(currentAudio.duration, currentAudio.currentTime);
-      setState((s) => ({
-        ...s,
-        currentTime: currentAudio.currentTime,
-        duration: currentAudio.duration || s.duration,
-      }));
+      const cur = currentAudio.currentTime || 0;
+      const dur = currentAudio.duration || 0;
+      mediaSessionService.updatePositionState(dur, cur);
+
+      // High-Frequency Time Dispatch: Emits only to scrubber & lyrics subscribers without re-rendering the root App
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('vybe-time-update', {
+            detail: { currentTime: cur, duration: dur },
+          })
+        );
+      }
+
+      // Pre-resolve at most 1 next track stream when current track is >= 80% finished
+      if (dur > 15 && cur / dur >= 0.80) {
+        preResolveNextTrackRef.current?.();
+      }
     };
 
     const onLoadedMetadata = () => {
@@ -398,10 +433,15 @@ export function useAudioEngine(
       if (index < 0 || index >= currentPl.length) return;
 
       const targetTrack = currentPl[index];
-      const src = await resolvePlayableUrl(targetTrack);
-      if (!src) return;
 
-      const incomingProfile = targetTrack.profile;
+      // Async Race-Condition Guard: increment load request ID
+      const requestId = ++currentLoadRequestIdRef.current;
+
+      // Immediate Deck Hard-Reset on Track Change:
+      // Pause both Deck A and Deck B and remove src BEFORE starting async stream URL resolution
+      engine.hardResetDecks(false);
+
+      echoBrain.recordPlayedTrack(targetTrack.id, targetTrack.title, targetTrack.artist);
 
       // Notify lyrics / visual components and native media keys immediately
       onTrackChangeRef.current?.(targetTrack, targetTrack.lyricsTrack);
@@ -418,6 +458,19 @@ export function useAudioEngine(
         currentTime: 0,
       }));
 
+      // Async stream URL resolution
+      const src = await resolvePlayableUrl(targetTrack);
+
+      // If a newer track load started while resolving, discard immediately
+      if (requestId !== currentLoadRequestIdRef.current) {
+        console.log(`[useAudioEngine] Discarding stale stream load (id=${requestId}, current=${currentLoadRequestIdRef.current}) for:`, targetTrack.title);
+        return;
+      }
+
+      if (!src) return;
+
+      const incomingProfile = targetTrack.profile;
+
       // Instant direct playback start on user track click (< 300ms)
       await engine.loadTrack(src, true, incomingProfile);
     },
@@ -433,7 +486,17 @@ export function useAudioEngine(
     if (!engine) return;
 
     const targetTrack = pl[nextIdx];
+    const requestId = ++currentLoadRequestIdRef.current;
+
+    const isAutoMix = stateRef.current.transitionMode === 'automix';
+    if (!isAutoMix) {
+      engine.hardResetDecks(false);
+    }
+
+    echoBrain.recordPlayedTrack(targetTrack.id, targetTrack.title, targetTrack.artist);
+
     const src = await resolvePlayableUrl(targetTrack);
+    if (requestId !== currentLoadRequestIdRef.current) return;
     if (!src) return;
 
     const outgoingTrack = stateRef.current.currentTrack;
@@ -562,18 +625,10 @@ export function useAudioEngine(
 
       const newTracks: QueuedTrack[] = tracks.map((meta) => ({
         ...meta,
-        lyricsStatus: 'Syncing LRCLIB...',
+        lyricsStatus: 'Synced Lyrics Ready',
         isPreFetched: false,
-        isAnalyzingAudio: true,
+        isAnalyzingAudio: false,
       }));
-
-      // Background analyze & prefetch lyrics
-      for (const qTrack of newTracks) {
-        if (qTrack.streamUrl) {
-          analyzeTrackBackground(qTrack, qTrack.streamUrl);
-        }
-        prefetchTrackLyrics(qTrack);
-      }
 
       setState((s) => {
         const isDefaultDemoOnly =
@@ -584,7 +639,16 @@ export function useAudioEngine(
 
         if (isDefaultDemoOnly || playImmediately) {
           const first = newTracks[0];
+          const requestId = ++currentLoadRequestIdRef.current;
+
+          if (engineRef.current) {
+            engineRef.current.hardResetDecks(false);
+          }
+
+          echoBrain.recordPlayedTrack(first.id, first.title, first.artist);
+
           resolvePlayableUrl(first).then((src) => {
+            if (requestId !== currentLoadRequestIdRef.current) return;
             if (src && engineRef.current) {
               first.streamUrl = src;
               first.audioUrl = src;
@@ -615,7 +679,7 @@ export function useAudioEngine(
         };
       });
     },
-    [analyzeTrackBackground, prefetchTrackLyrics]
+    []
   );
   addTracksToQueueRef.current = addTracksToQueue;
 
@@ -623,15 +687,10 @@ export function useAudioEngine(
     (track: TrackMetadata) => {
       const qTrack: QueuedTrack = {
         ...track,
-        lyricsStatus: 'Syncing LRCLIB...',
+        lyricsStatus: 'Synced Lyrics Ready',
         isPreFetched: false,
-        isAnalyzingAudio: true,
+        isAnalyzingAudio: false,
       };
-
-      if (qTrack.streamUrl) {
-        analyzeTrackBackground(qTrack, qTrack.streamUrl);
-      }
-      prefetchTrackLyrics(qTrack);
 
       setState((s) => {
         const isDefaultDemoOnly =
@@ -641,13 +700,21 @@ export function useAudioEngine(
             s.isDemoLoaded);
 
         if (isDefaultDemoOnly && !s.isPlaying) {
-          if (qTrack.streamUrl && engineRef.current) {
-            resolvePlayableUrl(qTrack).then((src) => {
-              if (src && engineRef.current) {
-                engineRef.current.loadTrack(src, true, qTrack.profile);
-              }
-            });
+          const requestId = ++currentLoadRequestIdRef.current;
+          if (engineRef.current) {
+            engineRef.current.hardResetDecks(false);
           }
+          echoBrain.recordPlayedTrack(qTrack.id, qTrack.title, qTrack.artist);
+
+          resolvePlayableUrl(qTrack).then((src) => {
+            if (requestId !== currentLoadRequestIdRef.current) return;
+            if (src && engineRef.current) {
+              qTrack.streamUrl = src;
+              qTrack.audioUrl = src;
+              qTrack.url = src;
+              engineRef.current.loadTrack(src, true, qTrack.profile);
+            }
+          });
           onTrackChangeRef.current?.(qTrack, qTrack.lyricsTrack);
           return {
             ...s,
@@ -671,7 +738,7 @@ export function useAudioEngine(
         };
       });
     },
-    [analyzeTrackBackground, prefetchTrackLyrics]
+    []
   );
 
   const addFilesToQueue = useCallback(
@@ -686,15 +753,11 @@ export function useAudioEngine(
         const qTrack: QueuedTrack = {
           ...meta,
           streamUrl,
-          lyricsStatus: 'Syncing LRCLIB...',
+          lyricsStatus: 'Synced Lyrics Ready',
           isPreFetched: false,
-          isAnalyzingAudio: true,
+          isAnalyzingAudio: false,
         };
         newTracks.push(qTrack);
-
-        // Run background tasks: LUFS scan + lyrics prefetch
-        analyzeTrackBackground(qTrack, file);
-        prefetchTrackLyrics(qTrack);
       }
 
       setState((s) => {
@@ -730,7 +793,7 @@ export function useAudioEngine(
         };
       });
     },
-    [analyzeTrackBackground, prefetchTrackLyrics]
+    []
   );
 
   const removeFromQueue = useCallback((index: number) => {
@@ -894,7 +957,13 @@ export function useAudioEngine(
     }, 200);
 
     engine.seek(timeSeconds);
-    setState((s) => ({ ...s, currentTime: timeSeconds }));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('vybe-time-update', {
+          detail: { currentTime: timeSeconds, duration: engine.getDuration() },
+        })
+      );
+    }
   }, []);
 
   // Register Native Lock-Screen, Bluetooth & Media Keys Handlers

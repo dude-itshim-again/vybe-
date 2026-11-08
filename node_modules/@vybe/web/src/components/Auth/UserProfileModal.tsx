@@ -11,6 +11,9 @@ import {
   CheckCircle2,
   Sparkles,
   ArrowRightLeft,
+  Cpu,
+  FolderOpen,
+  RefreshCw,
 } from 'lucide-react';
 import { userLibrary, VybeUser } from '../../services/userLibraryService';
 import { offlineVault, StorageStats } from '../../services/offlineVault';
@@ -28,6 +31,16 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
   const [emailInput, setEmailInput] = useState<string>('');
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [storageStats, setStorageStats] = useState<StorageStats>({ count: 0, totalBytes: 0, totalMB: '0.0' });
+  const [isPerfMode, setIsPerfMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('vybe_performance_mode');
+      if (saved !== null) return saved === 'true';
+      if (typeof navigator !== 'undefined' && navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) {
+        return true;
+      }
+    }
+    return false;
+  });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -136,6 +149,20 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
     showFeedback('Offline cache cleared.');
   };
 
+  const handleTogglePerfMode = () => {
+    const next = !isPerfMode;
+    setIsPerfMode(next);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('vybe_performance_mode', String(next));
+      document.documentElement.classList.toggle('perf-mode-low', next);
+    }
+    showFeedback(
+      next
+        ? 'Performance Mode Enabled • 60fps locked, blur disabled'
+        : 'Performance Mode Disabled • High-Fidelity blur enabled'
+    );
+  };
+
   const isGuest = userLibrary.isGuest();
   const allUsers = userLibrary.listUsers();
 
@@ -235,12 +262,36 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
           {/* VIEW 1: Account, Storage & Backup */}
           {activeTab === 'profile' && (
             <div className="space-y-6">
+              {/* Low-Spec / Performance Mode Toggle */}
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold font-mono uppercase tracking-wider text-amber-400">
+                    <Cpu className="w-4 h-4" />
+                    <span>Low-Spec / Performance Mode</span>
+                  </div>
+                  <button
+                    onClick={handleTogglePerfMode}
+                    className={`px-3 py-1 rounded-full text-xs font-mono font-bold transition-all cursor-pointer ${
+                      isPerfMode
+                        ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20'
+                        : 'bg-white/10 text-white/60 hover:text-white'
+                    }`}
+                  >
+                    {isPerfMode ? 'ACTIVE (60FPS)' : 'OFF (HIGH FIDELITY)'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Disables ambient mesh animations and GPU backdrop blur.
+                  Recommended for budget laptops and integrated GPUs to guarantee locked 60fps and low RAM usage.
+                </p>
+              </div>
+
               {/* Storage Stats Card */}
               <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-bold font-mono uppercase tracking-wider text-emerald-400">
                     <HardDrive className="w-4 h-4" />
-                    <span>Local Offline Vault (IndexedDB)</span>
+                    <span>Local Offline Vault (IndexedDB & Real Disk)</span>
                   </div>
                   <span className="text-xs font-mono text-gray-400">
                     {storageStats.totalMB} MB Used
@@ -256,19 +307,71 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                       </span>
                     </div>
                     <div className="text-[11px] text-gray-400 font-mono mt-0.5">
-                      Includes binary audio, cover art & synced lyrics
+                      Includes real .m4a files, audio blobs, cover art & synced lyrics
                     </div>
                   </div>
 
-                  {storageStats.count > 0 && (
-                    <button
-                      onClick={handleClearOfflineCache}
-                      className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Clear Vault</span>
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {typeof window !== 'undefined' && window.electron?.openDownloadsFolder && (
+                      <button
+                        onClick={() => window.electron?.openDownloadsFolder?.()}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Open Music/Vybe Downloads in Windows Explorer"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5" />
+                        <span>Open Folder</span>
+                      </button>
+                    )}
+
+                    {storageStats.count > 0 && (
+                      <button
+                        onClick={handleClearOfflineCache}
+                        className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Clear</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Over-The-Air (OTA) Updates Card */}
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold font-mono uppercase tracking-wider text-cyan-400">
+                    <Sparkles className="w-4 h-4" />
+                    <span>Desktop Software Updates</span>
+                  </div>
+                  <span className="text-xs font-mono text-gray-400">
+                    v0.1.0 • GitHub Releases
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <p className="text-xs text-gray-400 max-w-sm">
+                    Automatic Over-The-Air (OTA) desktop updates powered by electron-updater.
+                  </p>
+
+                  <button
+                    onClick={async () => {
+                      if (typeof window !== 'undefined' && window.electron?.checkForUpdates) {
+                        showFeedback('Checking GitHub Releases for updates...');
+                        const res = await window.electron.checkForUpdates();
+                        if (res?.status === 'checking') {
+                          showFeedback('Checking for updates...');
+                        } else if (res?.error) {
+                          showFeedback(`Updater: ${res.error}`);
+                        }
+                      } else {
+                        showFeedback('Desktop updater is active in packaged releases.');
+                      }
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Check for Updates</span>
+                  </button>
                 </div>
               </div>
 

@@ -60,3 +60,5 @@ android/.gradle/
 ios/App/build/
 ios/App/Pods/
 ios/App/DerivedData/
+*.apk
+*.aab

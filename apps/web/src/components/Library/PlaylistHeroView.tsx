@@ -12,6 +12,8 @@ import {
   Heart,
   X,
   Compass,
+  FolderOpen,
+  FolderSearch,
 } from 'lucide-react';
 import { EchoTrack } from '../../services/streamResolver';
 import { TrackMetadata } from '../../providers/types';
@@ -206,6 +208,7 @@ export const PlaylistHeroView: React.FC<PlaylistHeroViewProps> = ({
                   alt="Mosaic slice"
                   className="w-full h-full object-cover"
                   loading="lazy"
+                  decoding="async"
                 />
               ))}
             </div>
@@ -226,6 +229,8 @@ export const PlaylistHeroView: React.FC<PlaylistHeroViewProps> = ({
                 src={distinctArtworks[0]}
                 alt={playlist.name}
                 className="w-full h-full object-cover"
+                loading="lazy"
+                decoding="async"
               />
             </div>
           ) : (
@@ -320,6 +325,20 @@ export const PlaylistHeroView: React.FC<PlaylistHeroViewProps> = ({
               <Shuffle className="w-4 h-4" />
               <span>Shuffle Play</span>
             </button>
+
+            {/* 📂 Open Downloads Folder (Electron Native) */}
+            {(playlistId === DOWNLOADED_SONGS_PLAYLIST_ID || playlist.id === DOWNLOADED_SONGS_PLAYLIST_ID) &&
+              typeof window !== 'undefined' &&
+              window.electron?.openDownloadsFolder && (
+                <button
+                  onClick={() => window.electron?.openDownloadsFolder?.()}
+                  className="px-4 py-2.5 rounded-full bg-emerald-500/15 hover:bg-emerald-500/25 active:scale-95 text-emerald-300 text-xs font-semibold border border-emerald-500/30 flex items-center gap-2 backdrop-blur-md transition-all cursor-pointer shadow-sm"
+                  title="Open Vybe Downloads folder in Windows File Explorer"
+                >
+                  <FolderOpen className="w-4 h-4 text-emerald-400" />
+                  <span>Open Downloads Folder</span>
+                </button>
+              )}
 
             {/* 🗑️ Delete Playlist (Custom Only) */}
             {isCustom && (
@@ -471,6 +490,7 @@ export const PlaylistHeroView: React.FC<PlaylistHeroViewProps> = ({
                         }}
                         className="w-9 h-9 rounded-lg object-cover border border-white/10 shrink-0"
                         loading="lazy"
+                        decoding="async"
                       />
                     ) : (
                       <div className="w-9 h-9 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0 text-white/40">
@@ -511,6 +531,23 @@ export const PlaylistHeroView: React.FC<PlaylistHeroViewProps> = ({
                       onToggleLike={onToggleLike}
                       size="sm"
                     />
+
+                    {/* Show in File Explorer (Electron) */}
+                    {typeof window !== 'undefined' &&
+                      window.electron?.showItemInFolder &&
+                      (track.localFilePath || (track as any).localFilePath) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const path = track.localFilePath || (track as any).localFilePath;
+                            if (path) window.electron?.showItemInFolder?.(path);
+                          }}
+                          className="p-1 rounded text-white/40 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors cursor-pointer"
+                          title="Show audio file in Windows Explorer"
+                        >
+                          <FolderSearch className="w-3.5 h-3.5" />
+                        </button>
+                      )}
 
                     {/* Remove from this custom playlist (×) */}
                     {isCustom && (

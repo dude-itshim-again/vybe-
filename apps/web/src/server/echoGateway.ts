@@ -14,7 +14,7 @@ import { createRequire } from 'module';
 import { decryptDesEcb } from './des';
 
 const nodeRequire = createRequire(import.meta.url);
-const { resolveYouTubeAudio } = nodeRequire('../../electron/ytResolver.cjs');
+const { resolveYouTubeAudio, searchYouTubeVideos } = nodeRequire('../../electron/ytResolver.cjs');
 
 export const ANTI_KARAOKE_REGEX =
   /\b(karaoke|zzang|arcade player|16-bit|8-bit|emulation|originally perf|performed by|tribute to|melody version|instrumental version|ringtone|8d audio|chipmunk|nightcore)\b/i;
@@ -678,13 +678,29 @@ export function echoGatewayPlugin(): Plugin {
         const urlStr = httpReq.url || '';
 
         // Handle /api/echo/... and /api/resolve-stream endpoints
-        if (!urlStr.startsWith('/api/echo/') && !urlStr.startsWith('/api/resolve-stream')) {
+        if (!urlStr.startsWith('/api/echo/') && !urlStr.startsWith('/api/resolve-stream') && !urlStr.startsWith('/api/search-yt')) {
           return next();
         }
 
         try {
           const parsed = new URL(urlStr, 'http://localhost');
           const pathname = parsed.pathname;
+
+          // Search YouTube Fallback Endpoint
+          if (pathname === '/api/search-yt' || pathname === '/api/echo/search-yt') {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Content-Type', 'application/json');
+
+            const query = parsed.searchParams.get('q') || '';
+            const limit = parseInt(parsed.searchParams.get('limit') || '10', 10);
+            try {
+              const tracks = typeof searchYouTubeVideos === 'function' ? await searchYouTubeVideos(query, limit) : [];
+              res.end(JSON.stringify({ tracks }));
+            } catch (err: any) {
+              res.end(JSON.stringify({ tracks: [], error: err?.message }));
+            }
+            return;
+          }
 
           // 0. GET /api/resolve-stream?title=...&artist=...&duration=...
           if (pathname === '/api/resolve-stream' || pathname === '/api/echo/resolve-stream') {

@@ -52,6 +52,9 @@ const STORAGE_KEY_USERS_DB = 'vybe_users_db';
 const STORAGE_KEY_ACTIVE_USER = 'vybe_active_user';
 const STORAGE_KEY_OFFLINE_MODE = 'vybe_offline_mode_active';
 
+export const STORAGE_KEY_FAVORITES_V1 = 'vybe_favorites_v1';
+export const STORAGE_KEY_PLAYLISTS_V1 = 'vybe_playlists_v1';
+
 export const LIKED_SONGS_PLAYLIST_ID = 'liked-songs';
 export const DOWNLOADED_SONGS_PLAYLIST_ID = 'downloaded-songs';
 
@@ -88,11 +91,87 @@ class UserLibraryService {
   private playlists: VybePlaylist[] = [];
   private likedTrackMap: Map<string, EchoTrack> = new Map();
   private isOfflineMode: boolean = false;
+  private isHydrated: boolean = false;
   private listeners: Set<() => void> = new Set();
 
   constructor() {
     this.loadFromStorage();
     this.initSupabaseListener();
+    this.initPermanentStorage();
+  }
+
+  public getIsHydrated(): boolean {
+    return this.isHydrated;
+  }
+
+  public async initPermanentStorage(): Promise<void> {
+    if (typeof window !== 'undefined' && window.electron?.storageLoad) {
+      try {
+        const diskData = await window.electron.storageLoad();
+        if (diskData) {
+          this.mergeFromDiskData(diskData);
+        }
+      } catch (err) {
+        console.warn('[UserLibraryService] storageLoad error:', err);
+      }
+    }
+    this.isHydrated = true;
+    this.notify();
+  }
+
+  public mergeFromDiskData(diskData: any): void {
+    if (!diskData) return;
+
+    // Merge favorites/liked songs
+    const diskFavs = diskData.favorites || diskData.likedTracks;
+    if (Array.isArray(diskFavs) && diskFavs.length > 0) {
+      for (const t of diskFavs) {
+        if (t && t.id && !this.likedTrackMap.has(t.id)) {
+          this.likedTrackMap.set(t.id, t);
+        }
+      }
+      this.saveLikedTracksLocal();
+    }
+
+    // Merge playlists
+    if (Array.isArray(diskData.playlists) && diskData.playlists.length > 0) {
+      const existingIds = new Set(this.playlists.map((p) => p.id));
+      for (const pl of diskData.playlists) {
+        if (pl && pl.id && !existingIds.has(pl.id)) {
+          this.playlists.push(pl);
+          existingIds.add(pl.id);
+        }
+      }
+      this.savePlaylistsLocal();
+    }
+
+    // Merge recently played
+    if (Array.isArray(diskData.recentlyPlayed) && diskData.recentlyPlayed.length > 0) {
+      const currentRecent = this.getUserRecentlyPlayed();
+      if (currentRecent.length === 0) {
+        this.setUserRecentlyPlayed(diskData.recentlyPlayed, false);
+      }
+    }
+  }
+
+  public savePermanentDisk(): void {
+    if (!this.isHydrated) return;
+    if (typeof window !== 'undefined' && window.electron?.storageSave) {
+      try {
+        const payload = {
+          favorites: Array.from(this.likedTrackMap.values()),
+          playlists: this.playlists,
+          recentlyPlayed: this.getUserRecentlyPlayed(),
+          lastPlayedTrack: this.getUserLastPlayedTrack(),
+          savedAt: Date.now(),
+        };
+        window.electron.storageSave(payload).catch((e) => {
+          console.warn('[UserLibraryService] storageSave error:', e);
+        });
+      } catch (err) {
+        console.warn('[UserLibraryService] savePermanentDisk error:', err);
+      }
+    }
   }
 
   public subscribe(listener: () => void): () => void {
@@ -125,7 +204,9 @@ class UserLibraryService {
       if (session?.user) {
         await this.syncFromSupabaseUser(session.user);
       } else if (event === 'SIGNED_OUT') {
-        this.handleSignedOut();
+        if (this.currentUser.id !== DEFAULT_GUEST_USER.id) {
+          this.handleSignedOut();
+        }
       }
     });
   }
@@ -153,26 +234,52 @@ class UserLibraryService {
     }
 
     // Fetch and hydrate real PostgreSQL user_library data
-    const row = await fetchUserLibrary(user.id);
-    if (row) {
-      if (row.display_name) {
-        this.currentUser.name = row.display_name;
+    try {
+      const row = await fetchUserLibrary(user.id);
+      if (row) {
+        if (row.display_name) {
+          this.currentUser.name = row.display_name;
+        }
+        // Non-destructive playlists merge: never wipe local playlists with empty remote
+        if (Array.isArray(row.playlists) && row.playlists.length > 0) {
+          const localMap = new Map(this.playlists.map((p) => [p.id, p]));
+          for (const remotePl of row.playlists) {
+            if (!localMap.has(remotePl.id)) {
+              this.playlists.push(remotePl);
+              localMap.set(remotePl.id, remotePl);
+            } else {
+              const existing = localMap.get(remotePl.id)!;
+              const existingTrackIds = new Set(existing.tracks.map((t) => t.id));
+              for (const rt of remotePl.tracks || []) {
+                if (rt && rt.id && !existingTrackIds.has(rt.id)) {
+                  existing.tracks.push(rt);
+                  existingTrackIds.add(rt.id);
+                }
+              }
+            }
+          }
+        }
+        // Non-destructive favorites merge: never clear local favorites with empty remote
+        if (Array.isArray(row.liked_tracks) && row.liked_tracks.length > 0) {
+          row.liked_tracks.forEach((t) => {
+            if (t && t.id && !this.likedTrackMap.has(t.id)) {
+              this.likedTrackMap.set(t.id, t);
+            }
+          });
+        }
+        if (Array.isArray(row.recently_played) && row.recently_played.length > 0) {
+          this.setUserRecentlyPlayed(row.recently_played, false);
+        }
+        if (row.last_played_track) {
+          this.setUserLastPlayedTrack(row.last_played_track, false);
+        }
+      } else {
+        // Fallback: load local namespaced storage
+        this.loadUserPlaylists();
+        this.reloadUserLikedTracks();
       }
-      if (Array.isArray(row.playlists)) {
-        this.playlists = row.playlists;
-      }
-      if (Array.isArray(row.liked_tracks)) {
-        this.likedTrackMap.clear();
-        row.liked_tracks.forEach((t) => this.likedTrackMap.set(t.id, t));
-      }
-      if (Array.isArray(row.recently_played)) {
-        this.setUserRecentlyPlayed(row.recently_played, false);
-      }
-      if (row.last_played_track) {
-        this.setUserLastPlayedTrack(row.last_played_track, false);
-      }
-    } else {
-      // Fallback: load local namespaced storage
+    } catch (err) {
+      console.warn('[UserLibraryService] Supabase sync fetch fallback:', err);
       this.loadUserPlaylists();
       this.reloadUserLikedTracks();
     }
@@ -188,8 +295,10 @@ class UserLibraryService {
     if (typeof window !== 'undefined' && window.localStorage) {
       localStorage.removeItem(STORAGE_KEY_ACTIVE_USER);
     }
-    this.playlists = [];
-    this.likedTrackMap.clear();
+    // Re-hydrate local guest library snapshot instead of wiping out state
+    this.loadUserLibrarySnapshot(DEFAULT_GUEST_USER.id);
+    this.loadUserPlaylists();
+    this.reloadUserLikedTracks();
     this.notify();
   }
 
@@ -274,7 +383,10 @@ class UserLibraryService {
     if (typeof window === 'undefined' || !window.localStorage) return;
     try {
       const userKey = `vybe_playlists_${this.currentUser.id}`;
-      let raw = localStorage.getItem('vybe_playlists') || localStorage.getItem(userKey);
+      let raw =
+        localStorage.getItem(STORAGE_KEY_PLAYLISTS_V1) ||
+        localStorage.getItem('vybe_playlists') ||
+        localStorage.getItem(userKey);
       if (!raw && this.currentUser.id === DEFAULT_GUEST_USER.id) {
         raw = localStorage.getItem('vybe_playlists_v2');
       }
@@ -301,8 +413,10 @@ class UserLibraryService {
     if (typeof window === 'undefined' || !window.localStorage) return;
     try {
       const userKey = `vybe_playlists_${this.currentUser.id}`;
-      localStorage.setItem(userKey, JSON.stringify(this.playlists));
-      localStorage.setItem('vybe_playlists', JSON.stringify(this.playlists));
+      const json = JSON.stringify(this.playlists);
+      localStorage.setItem(STORAGE_KEY_PLAYLISTS_V1, json);
+      localStorage.setItem('vybe_playlists', json);
+      localStorage.setItem(userKey, json);
     } catch (e) {
       console.warn('[UserLibraryService] Failed to save playlists:', e);
     }
@@ -311,6 +425,12 @@ class UserLibraryService {
   private savePlaylists(): void {
     this.savePlaylistsLocal();
     this.saveUserLibrarySnapshot(this.currentUser.id);
+    this.savePermanentDisk();
+    if (this.currentUser.id !== DEFAULT_GUEST_USER.id) {
+      try {
+        syncUserLibrary(this.currentUser.id, { playlists: this.playlists }).catch(() => {});
+      } catch (_) {}
+    }
   }
 
   private reloadUserLikedTracks(): void {
@@ -318,13 +438,17 @@ class UserLibraryService {
     if (typeof window === 'undefined' || !window.localStorage) return;
     try {
       const userKey = `vybe_liked_${this.currentUser.id}`;
-      let raw = localStorage.getItem('vybe_liked_tracks') || localStorage.getItem(userKey);
+      let raw =
+        localStorage.getItem(STORAGE_KEY_FAVORITES_V1) ||
+        localStorage.getItem('vybe_liked_tracks') ||
+        localStorage.getItem(userKey);
       if (!raw) {
         const legacy = localStorage.getItem('vybe_liked_tracks_v2');
         if (legacy) {
           const parsedLegacy = JSON.parse(legacy) as Record<string, EchoTrack[]>;
           const userLiked = parsedLegacy[this.currentUser.id] || [];
           userLiked.forEach((t) => this.likedTrackMap.set(t.id, t));
+          this.saveLikedTracksLocal();
           return;
         }
       }
@@ -342,8 +466,10 @@ class UserLibraryService {
     try {
       const userKey = `vybe_liked_${this.currentUser.id}`;
       const arr = Array.from(this.likedTrackMap.values());
-      localStorage.setItem(userKey, JSON.stringify(arr));
-      localStorage.setItem('vybe_liked_tracks', JSON.stringify(arr));
+      const json = JSON.stringify(arr);
+      localStorage.setItem(STORAGE_KEY_FAVORITES_V1, json);
+      localStorage.setItem('vybe_liked_tracks', json);
+      localStorage.setItem(userKey, json);
     } catch (e) {
       console.warn('[UserLibraryService] Failed to save liked tracks:', e);
     }
@@ -352,6 +478,14 @@ class UserLibraryService {
   private saveLikedTracks(): void {
     this.saveLikedTracksLocal();
     this.saveUserLibrarySnapshot(this.currentUser.id);
+    this.savePermanentDisk();
+    if (this.currentUser.id !== DEFAULT_GUEST_USER.id) {
+      try {
+        syncUserLibrary(this.currentUser.id, {
+          liked_tracks: Array.from(this.likedTrackMap.values()),
+        }).catch(() => {});
+      } catch (_) {}
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -363,13 +497,22 @@ class UserLibraryService {
       const raw = localStorage.getItem(`vybe_library_${userId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.playlists)) {
-          this.playlists = parsed.playlists;
+        if (Array.isArray(parsed.playlists) && parsed.playlists.length > 0) {
+          const localMap = new Map(this.playlists.map((p) => [p.id, p]));
+          for (const pl of parsed.playlists) {
+            if (!localMap.has(pl.id)) {
+              this.playlists.push(pl);
+              localMap.set(pl.id, pl);
+            }
+          }
           this.savePlaylistsLocal();
         }
-        if (Array.isArray(parsed.likedTracks)) {
-          this.likedTrackMap.clear();
-          parsed.likedTracks.forEach((t: EchoTrack) => this.likedTrackMap.set(t.id, t));
+        if (Array.isArray(parsed.likedTracks) && parsed.likedTracks.length > 0) {
+          parsed.likedTracks.forEach((t: EchoTrack) => {
+            if (t && t.id && !this.likedTrackMap.has(t.id)) {
+              this.likedTrackMap.set(t.id, t);
+            }
+          });
           this.saveLikedTracksLocal();
         }
         if (Array.isArray(parsed.recentlyPlayed)) {
@@ -410,13 +553,22 @@ class UserLibraryService {
     if (row.display_name && this.currentUser.id === userId) {
       this.currentUser.name = row.display_name;
     }
-    if (Array.isArray(row.playlists)) {
-      this.playlists = row.playlists;
+    if (Array.isArray(row.playlists) && row.playlists.length > 0) {
+      const localMap = new Map(this.playlists.map((p) => [p.id, p]));
+      for (const pl of row.playlists) {
+        if (!localMap.has(pl.id)) {
+          this.playlists.push(pl);
+          localMap.set(pl.id, pl);
+        }
+      }
       this.savePlaylistsLocal();
     }
-    if (Array.isArray(row.liked_tracks)) {
-      this.likedTrackMap.clear();
-      row.liked_tracks.forEach((t: EchoTrack) => this.likedTrackMap.set(t.id, t));
+    if (Array.isArray(row.liked_tracks) && row.liked_tracks.length > 0) {
+      row.liked_tracks.forEach((t: EchoTrack) => {
+        if (t && t.id && !this.likedTrackMap.has(t.id)) {
+          this.likedTrackMap.set(t.id, t);
+        }
+      });
       this.saveLikedTracksLocal();
     }
     if (Array.isArray(row.recently_played)) {
@@ -624,6 +776,7 @@ class UserLibraryService {
       localStorage.setItem(`vybe_recently_played_${this.currentUser.id}`, JSON.stringify(tracks));
       localStorage.setItem('vybe_recently_played', JSON.stringify(tracks));
       this.saveUserLibrarySnapshot(this.currentUser.id);
+      this.savePermanentDisk();
       if (shouldSyncCloud && this.currentUser.id !== DEFAULT_GUEST_USER.id) {
         syncUserLibrary(this.currentUser.id, { recently_played: tracks });
       }
@@ -655,6 +808,7 @@ class UserLibraryService {
         localStorage.removeItem('vybe_last_played_track');
       }
       this.saveUserLibrarySnapshot(this.currentUser.id);
+      this.savePermanentDisk();
       if (shouldSyncCloud && this.currentUser.id !== DEFAULT_GUEST_USER.id) {
         syncUserLibrary(this.currentUser.id, { last_played_track: track });
       }

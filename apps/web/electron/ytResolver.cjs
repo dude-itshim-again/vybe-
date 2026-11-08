@@ -64,12 +64,28 @@ function isKaraokeOrBootleg(text) {
   return ANTI_KARAOKE_REGEX.test(text || '');
 }
 
+function normalizeString(str) {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractPrimaryArtist(artist) {
+  if (!artist) return '';
+  const first = String(artist).split(/[,&/-]|\bfeat\.?\b|\bft\.?\b/i)[0];
+  return normalizeString(first);
+}
+
 /**
  * Resolves full-length studio audio stream for a given song title and artist.
- * 1. Searches YouTube for `${artist} - ${title} Official Audio`.
- * 2. Filters out shorts, loops, and any karaoke/emulation tracks.
- * 3. Matches duration within closest range of official track duration.
- * 4. Extracts highest bitrate audio format via @distube/ytdl-core or play-dl.
+ * 1. Searches YouTube with exact query `${artist} - ${title} Official Audio`.
+ * 2. Filters the top 8 candidates: strictly requires primary artist and song title.
+ * 3. Rejects karaoke, covers, instrumentals, reactions, 8d, tutorials, concert recordings.
+ * 4. Picks candidate with duration closest to targetDuration (within ±15 seconds).
+ * 5. Extracts highest bitrate audio format via @distube/ytdl-core or play-dl.
  */
 async function resolveYouTubeAudio(title, artist, targetDuration = 0) {
   if (!title) return null;
@@ -91,11 +107,20 @@ async function resolveYouTubeAudio(title, artist, targetDuration = 0) {
     .replace(/\b(?:feat\.?|ft\.?)\b.*$/gi, '')
     .trim();
 
+  const primaryArtist = extractPrimaryArtist(artist);
+  const normalizedTitle = normalizeString(cleanTitle || title);
+
+  const isCoverRequested = /\bcover\b/i.test(title);
+  const isKaraokeRequested = /\bkaraoke\b/i.test(title);
+  const isInstrumentalRequested = /\binstrumental\b/i.test(title);
+  const isLiveRequested = /\blive\b/i.test(title);
+
+  // Exact search query as specified: "${track.artist} - ${track.title} Official Audio"
   const queries = [
+    `${artist} - ${title} Official Audio`,
     `${cleanArtist} - ${cleanTitle} Official Audio`,
     `${cleanArtist} - ${cleanTitle}`,
-    `${artist} - ${title} Official Audio`,
-    `${cleanArtist} ${cleanTitle}`,
+    `${artist} - ${title}`,
   ];
 
   let videos = [];
@@ -115,18 +140,49 @@ async function resolveYouTubeAudio(title, artist, targetDuration = 0) {
     return null;
   }
 
-  // Filter candidates: ignore shorts (< 40s), hour-long loops (> 900s), and bootleg/karaoke
-  const candidates = videos.filter((v) => {
-    if (isKaraokeOrBootleg(`${v.title} ${v.author?.name || ''}`)) return false;
+  // Inspect the top 8 search results
+  const top8 = videos.slice(0, 8);
+
+  // Filter candidates strictly
+  const strictCandidates = top8.filter((v) => {
+    const combined = `${v.title} ${v.author?.name || ''}`.toLowerCase();
+
+    // Rejection filter
+    if (!isCoverRequested && /\b(cover|acoustic cover|dance cover|remake|parody)\b/i.test(combined)) return false;
+    if (!isKaraokeRequested && /\b(karaoke|zzang|arcade player|16-bit|8-bit)\b/i.test(combined)) return false;
+    if (!isInstrumentalRequested && /\b(instrumental|backing track)\b/i.test(combined)) return false;
+    if (!isLiveRequested && /\b(live at|live concert|concert|reaction|8d|tutorial|10 hours|hour loop)\b/i.test(combined)) return false;
+
+    // Filter out shorts (< 35s) and hour-long loops (> 900s)
     if (v.seconds < 35 || v.seconds > 900) return false;
+
+    const normVideoTitle = normalizeString(v.title);
+    const normChannel = normalizeString(v.author?.name || '');
+
+    // Strict Requirement:
+    // 1. Channel or video title contains primary artist
+    const hasArtist = normVideoTitle.includes(primaryArtist) || normChannel.includes(primaryArtist);
+    // 2. Video title contains song title
+    const hasTitle = normVideoTitle.includes(normalizedTitle) || normalizedTitle.includes(normVideoTitle);
+
+    if (!hasArtist || !hasTitle) return false;
+
     return true;
+  });
+
+  const candidates = strictCandidates.length > 0 ? strictCandidates : top8.filter((v) => {
+    const normVideoTitle = normalizeString(v.title);
+    const normChannel = normalizeString(v.author?.name || '');
+    return (normVideoTitle.includes(primaryArtist) || normChannel.includes(primaryArtist)) &&
+           normVideoTitle.includes(normalizedTitle) &&
+           v.seconds >= 35 && v.seconds <= 900;
   });
 
   if (candidates.length === 0) {
     return null;
   }
 
-  // Score candidates to pick the most accurate studio audio
+  // Score candidates to pick the most accurate studio audio within ±15 seconds
   let bestCandidate = candidates[0];
   let bestScore = -9999;
 
@@ -135,17 +191,17 @@ async function resolveYouTubeAudio(title, artist, targetDuration = 0) {
     const lowerTitle = v.title.toLowerCase();
     const lowerAuthor = (v.author?.name || '').toLowerCase();
 
-    if (lowerTitle.includes('official audio')) score += 50;
-    if (lowerAuthor.includes('topic')) score += 40; // Official YouTube Music auto-generated upload
+    if (lowerTitle.includes('official audio')) score += 60;
+    if (lowerAuthor.includes('topic')) score += 50; // Official YouTube Music auto-generated upload
     if (lowerTitle.includes('official video') || lowerTitle.includes('official music video')) score += 30;
-    if (lowerAuthor.includes(cleanArtist.toLowerCase())) score += 25;
+    if (lowerAuthor.includes(cleanArtist.toLowerCase())) score += 30;
 
     if (targetDuration > 0) {
       const diff = Math.abs(v.seconds - targetDuration);
-      if (diff <= 5) score += 40;
-      else if (diff <= 12) score += 25;
-      else if (diff <= 25) score += 10;
-      else score -= diff;
+      if (diff <= 5) score += 60;
+      else if (diff <= 12) score += 40;
+      else if (diff <= 15) score += 25;
+      else score -= diff * 2;
     }
 
     if (score > bestScore) {
@@ -206,8 +262,57 @@ async function resolveYouTubeAudio(title, artist, targetDuration = 0) {
   return null;
 }
 
+/**
+ * Searches YouTube for tracks (remixes, anime OST, unreleased tracks, niche music).
+ * Respects anti-karaoke filtering unless user explicitly searched for "karaoke".
+ */
+async function searchYouTubeVideos(query, limit = 10) {
+  if (!query || typeof query !== 'string') return [];
+  const cleanQ = query.trim();
+  if (!cleanQ) return [];
+
+  const ytSearch = await getYtSearch();
+  if (!ytSearch) {
+    console.error('[ytResolver] yt-search is not available for search');
+    return [];
+  }
+
+  try {
+    const res = await ytSearch(cleanQ);
+    if (!res || !Array.isArray(res.videos)) return [];
+
+    const isKaraokeSearch = /\bkaraoke\b/i.test(cleanQ);
+
+    const filtered = res.videos.filter((v) => {
+      if (!isKaraokeSearch && isKaraokeOrBootleg(`${v.title} ${v.author?.name || ''}`)) {
+        return false;
+      }
+      if (v.seconds < 30 || v.seconds > 1800) return false;
+      return true;
+    });
+
+    return filtered.slice(0, limit).map((v) => ({
+      id: `yt-${v.videoId}`,
+      title: v.title,
+      artist: v.author?.name || 'YouTube',
+      album: 'YouTube Music',
+      duration: v.seconds,
+      artworkUrl: v.thumbnail || v.image,
+      streamUrl: '',
+      quality: '256kbps Opus',
+      source: 'ytmusic',
+      sourceType: 'stream',
+      searchQuery: `${v.author?.name || ''} ${v.title}`.trim(),
+    }));
+  } catch (err) {
+    console.warn('[ytResolver] searchYouTubeVideos error:', err.message);
+    return [];
+  }
+}
+
 module.exports = {
   resolveYouTubeAudio,
+  searchYouTubeVideos,
   isKaraokeOrBootleg,
   ANTI_KARAOKE_REGEX,
 };

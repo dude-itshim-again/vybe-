@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -8,6 +8,7 @@ import {
   Repeat,
   Repeat1,
   Heart,
+  Plus,
   Mic2,
   Sliders,
   Volume2,
@@ -25,8 +26,8 @@ interface EditorialPlayerDockProps {
   onTogglePlay: () => void;
   onNext: () => void;
   onPrev: () => void;
-  currentTime: number;
-  duration: number;
+  currentTime?: number;
+  duration?: number;
   onSeek: (time: number) => void;
   volume: number;
   isMuted: boolean;
@@ -44,6 +45,8 @@ interface EditorialPlayerDockProps {
   onToggleShuffle?: () => void;
   repeatMode?: 'off' | 'all' | 'one';
   onToggleRepeat?: () => void;
+  onToggleLike?: (track: TrackMetadata, isLiked: boolean) => void;
+  onOpenAddToPlaylist?: (track: TrackMetadata) => void;
 }
 
 export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
@@ -70,11 +73,41 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
   onToggleShuffle,
   repeatMode: controlledRepeatMode,
   onToggleRepeat,
+  onToggleLike,
+  onOpenAddToPlaylist,
 }) => {
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
   const [scrubValue, setScrubValue] = useState<number>(0);
   const [internalShuffle, setInternalShuffle] = useState<boolean>(false);
   const [internalRepeat, setInternalRepeat] = useState<boolean>(false);
+
+  // High-frequency playback time subscription (Isolated from root App re-renders)
+  const [playbackTime, setPlaybackTime] = useState<{ currentTime: number; duration: number }>({
+    currentTime: currentTime || 0,
+    duration: duration || track?.duration || 300,
+  });
+
+  useEffect(() => {
+    const handleTime = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && typeof detail.currentTime === 'number') {
+        setPlaybackTime(detail);
+      }
+    };
+    window.addEventListener('vybe-time-update', handleTime);
+    return () => window.removeEventListener('vybe-time-update', handleTime);
+  }, []);
+
+  // Real-time Favorite / Liked State synchronization
+  const [isLiked, setIsLiked] = useState<boolean>(() => (track ? userLibrary.isLiked(track.id) : false));
+
+  useEffect(() => {
+    setIsLiked(track ? userLibrary.isLiked(track.id) : false);
+    const unsub = userLibrary.subscribe(() => {
+      setIsLiked(track ? userLibrary.isLiked(track.id) : false);
+    });
+    return unsub;
+  }, [track?.id]);
 
   const shuffleActive = controlledShuffle !== undefined ? controlledShuffle : internalShuffle;
   const handleToggleShuffle = onToggleShuffle || (() => setInternalShuffle((s) => !s));
@@ -83,8 +116,8 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
   const isRepeatOne = controlledRepeatMode === 'one';
   const handleToggleRepeat = onToggleRepeat || (() => setInternalRepeat((r) => !r));
 
-  const displayTime = isScrubbing ? scrubValue : currentTime;
-  const isLiked = track ? userLibrary.isLiked(track.id) : false;
+  const activeTime = isScrubbing ? scrubValue : (playbackTime.currentTime || currentTime || 0);
+  const activeDuration = playbackTime.duration || duration || track?.duration || 300;
 
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '0:00';
@@ -93,7 +126,7 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const progressPercent = duration > 0 ? Math.min(100, (displayTime / duration) * 100) : 0;
+  const progressPercent = activeDuration > 0 ? Math.min(100, (activeTime / activeDuration) * 100) : 0;
 
   return (
     <footer className="fixed bottom-0 left-0 right-0 h-[82px] z-40 bg-[#07080C]/88 border-t border-white/[0.18] backdrop-blur-[48px] saturate-[200%] px-5 sm:px-7 flex items-center justify-between select-none shadow-[0_-10px_35px_rgba(0,0,0,0.65)]">
@@ -107,6 +140,7 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
             <img
               src={track.artworkUrl || track.coverUrl || track.image}
               alt={track.title}
+              decoding="async"
               onError={(e) => {
                 const target = e.currentTarget as HTMLImageElement;
                 if (!target.src.endsWith('logo.png')) {
@@ -135,8 +169,13 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
 
         {/* Heart Toggle Button */}
         <button
-          onClick={() => {
-            if (track) userLibrary.toggleLike(track);
+          onClick={(e) => {
+            e.stopPropagation();
+            if (track) {
+              const next = userLibrary.toggleLike(track);
+              setIsLiked(next);
+              onToggleLike?.(track, next);
+            }
           }}
           className="p-1.5 text-white/40 hover:text-[#E86538] transition-colors cursor-pointer shrink-0"
           title={isLiked ? 'Unlike' : 'Like'}
@@ -146,6 +185,18 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
               isLiked ? 'fill-[#E86538] text-[#E86538]' : ''
             }`}
           />
+        </button>
+
+        {/* Add to Playlist (+) */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (track) onOpenAddToPlaylist?.(track);
+          }}
+          className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
+          title="Add to Playlist"
+        >
+          <Plus className="w-4 h-4" />
         </button>
       </div>
 
@@ -216,8 +267,8 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
 
         {/* Bottom Row: Current Time + Interactive Scrub Bar + Total Duration */}
         <div className="w-full flex items-center gap-2.5">
-          <span className="text-[11px] font-mono text-white/40 w-9 text-right shrink-0">
-            {formatTime(displayTime)}
+          <span className="text-[11px] font-mono text-white/40 w-9 text-right shrink-0 tabular-nums">
+            {formatTime(activeTime)}
           </span>
 
           {/* Sleek Interactive Scrub Bar (3px default, 5px hover) */}
@@ -234,9 +285,9 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
             <input
               type="range"
               min="0"
-              max={duration || 100}
+              max={activeDuration || 100}
               step="0.1"
-              value={displayTime}
+              value={activeTime}
               onMouseDown={() => setIsScrubbing(true)}
               onPointerDown={() => setIsScrubbing(true)}
               onInput={(e) => {
@@ -263,8 +314,8 @@ export const EditorialPlayerDock: React.FC<EditorialPlayerDockProps> = ({
             />
           </div>
 
-          <span className="text-[11px] font-mono text-white/40 w-9 text-left shrink-0">
-            {formatTime(duration)}
+          <span className="text-[11px] font-mono text-white/40 w-9 text-left shrink-0 tabular-nums">
+            {formatTime(activeDuration)}
           </span>
         </div>
       </div>
